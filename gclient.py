@@ -2237,6 +2237,9 @@ def CMDverify(parser, args):
         'dependencies from disallowed hosts; check your DEPS file.')
   return 0
 
+def CMDsupports_cache_mode(parser, args):
+  print('Yes')
+
 class OptionParser(optparse.OptionParser):
   gclientfile_default = os.environ.get('GCLIENT_FILE', '.gclient')
 
