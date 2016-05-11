@@ -1280,6 +1280,16 @@ want to set 'managed': False in .gclient.
     gclient_scm.GitWrapper.cache_dir = cache_dir
     git_cache.Mirror.SetCachePath(cache_dir)
 
+    cache_mode = config_dict.get('cache_mode')
+    if cache_mode:
+      if not cache_dir:
+        raise gclient_utils.Error('Can\'t use cache_mode if cache_dir is '
+                                  'not specified')
+      if cache_mode not in ('full', 'reference'):
+        raise gclient_utils.Error('Invalid value for cache_mode')
+
+      gclient_scm.GitWrapper.cache_mode = cache_mode
+
     if not target_os and config_dict.get('target_os_only', False):
       raise gclient_utils.Error('Can\'t use target_os_only if target_os is '
                                 'not specified')

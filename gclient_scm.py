@@ -180,7 +180,8 @@ class SCMWrapper(object):
       actual_remote_url = self._get_first_remote_url(self.checkout_path)
 
       # If a cache_dir is used, obtain the actual remote URL from the cache.
-      if getattr(self, 'cache_dir', None):
+      if (getattr(self, 'cache_dir', None) and
+          getattr(self, 'cache_mode', 'full') == 'full'):
         url, _ = gclient_utils.SplitUrlRevision(self.url)
         mirror = git_cache.Mirror(url)
         if (mirror.exists() and mirror.mirror_path.replace('\\', '/') ==
@@ -246,6 +247,7 @@ class GitWrapper(SCMWrapper):
   remote = 'origin'
 
   cache_dir = None
+  cache_mode = 'full'
 
   def __init__(self, url=None, *args):
     """Removes 'git+' fake prefix from git URL."""
@@ -413,7 +415,7 @@ class GitWrapper(SCMWrapper):
       rev_type = "hash"
 
     mirror = self._GetMirror(url, options)
-    if mirror:
+    if mirror and self.cache_mode == 'full':
       url = mirror.mirror_path
 
     # If we are going to introduce a new project, there is a possibility that
@@ -915,7 +917,12 @@ class GitWrapper(SCMWrapper):
     cfg = gclient_utils.DefaultIndexPackConfig(url)
     clone_cmd = cfg + ['clone', '--no-checkout', '--progress']
     if self.cache_dir:
-      clone_cmd.append('--shared')
+      if self.cache_mode == 'full':
+        clone_cmd.append('--shared')
+      else:
+        assert self.cache_mode == 'reference'
+        mirror = self._GetMirror(url, options)
+        clone_cmd.extend(['--reference', mirror.mirror_path])
     if options.verbose:
       clone_cmd.append('--verbose')
     clone_cmd.append(url)
