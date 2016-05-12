@@ -199,7 +199,12 @@ class Mirror(object):
   def UrlToCacheDir(url):
     """Convert a git url to a normalized form for the cache dir path."""
     parsed = urlparse.urlparse(url)
-    norm_url = parsed.netloc + parsed.path
+    netloc = parsed.netloc
+    try:
+      netloc = re.match(r'[^@]*@(.*)', netloc).groups()[0]
+    except:
+      pass
+    norm_url = netloc + parsed.path
     if norm_url.endswith('.git'):
       norm_url = norm_url[:-len('.git')]
     return norm_url.replace('-', '--').replace('/', '-').lower()
