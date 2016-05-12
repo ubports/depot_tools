@@ -172,8 +172,16 @@ class Mirror(object):
 
   def __init__(self, url, refs=None, print_func=None):
     self.url = url
+    parsed = urlparse.urlparse(self.url)
+    if parsed.scheme == 'git+ssh':
+      parsed = parsed._replace(scheme="https")
+      try:
+        parsed = parsed._replace(netloc=re.match(r'[^@]*@(.*)', parsed.netloc).groups()[0])
+      except:
+        pass
+      self.url = parsed.geturl()
     self.fetch_specs = set([self.parse_fetch_spec(ref) for ref in (refs or [])])
-    self.basedir = self.UrlToCacheDir(url)
+    self.basedir = self.UrlToCacheDir(self.url)
     self.mirror_path = os.path.join(self.GetCachePath(), self.basedir)
     if print_func:
       self.print = self.print_without_file
@@ -199,12 +207,7 @@ class Mirror(object):
   def UrlToCacheDir(url):
     """Convert a git url to a normalized form for the cache dir path."""
     parsed = urlparse.urlparse(url)
-    netloc = parsed.netloc
-    try:
-      netloc = re.match(r'[^@]*@(.*)', netloc).groups()[0]
-    except:
-      pass
-    norm_url = netloc + parsed.path
+    norm_url = parsed.netloc + parsed.path
     if norm_url.endswith('.git'):
       norm_url = norm_url[:-len('.git')]
     return norm_url.replace('-', '--').replace('/', '-').lower()
