@@ -173,12 +173,13 @@ class Mirror(object):
   def __init__(self, url, refs=None, print_func=None):
     self.url = url
     parsed = urlparse.urlparse(self.url)
-    if parsed.scheme.endswith('ssh'):
+    if parsed.scheme == 'ssh':
+      # Switch SSH URLs to their HTTPS equivalent for the purpose of
+      # storing in the cache - this means that multiple checkouts using a
+      # mix of HTTPS and SSH use the same cache. The assumptions we make to
+      # do this are at least valid for code hosted on Launchpad
       parsed = parsed._replace(scheme="https")
-      try:
-        parsed = parsed._replace(netloc=re.match(r'[^@]*@(.*)', parsed.netloc).groups()[0])
-      except:
-        pass
+      parsed = parsed._replace(netloc=re.match(r'[^@]+@(.*)', parsed.netloc).groups()[0])
       self.url = parsed.geturl()
     self.fetch_specs = set([self.parse_fetch_spec(ref) for ref in (refs or [])])
     self.basedir = self.UrlToCacheDir(self.url)
