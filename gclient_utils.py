@@ -70,9 +70,9 @@ def AddWarning(msg):
 
 def SplitUrlRevision(url):
   """Splits url and returns a two-tuple: url, rev"""
-  if url.startswith('ssh:') or url.startswith('git+ssh:'):
+  if url.startswith('ssh:'):
     # Make sure ssh://user-name@example.com/~/test.git@stable works
-    regex = r'(ssh://(?:[-.\w]+@)?[-\w:\.]+/[-~\w\./]+)(?:@(.+))?'
+    regex = r'(ssh://(?:[-.\w]+@)?[-\w:\.]+/[-~\w\./\+]+)(?:@(.+))?'
     components = re.search(regex, url).groups()
   else:
     components = url.rsplit('@', 1)

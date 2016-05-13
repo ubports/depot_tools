@@ -173,7 +173,7 @@ class Mirror(object):
   def __init__(self, url, refs=None, print_func=None):
     self.url = url
     parsed = urlparse.urlparse(self.url)
-    if parsed.scheme == 'git+ssh':
+    if parsed.scheme.endswith('ssh'):
       parsed = parsed._replace(scheme="https")
       try:
         parsed = parsed._replace(netloc=re.match(r'[^@]*@(.*)', parsed.netloc).groups()[0])
