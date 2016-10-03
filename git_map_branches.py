@@ -128,17 +128,20 @@ class BranchMapper(object):
         include_tracking_status=self.verbosity >= 1)
     if (self.verbosity >= 2):
       # Avoid heavy import unless necessary.
-      from git_cl import get_cl_statuses, color_for_status
+      from git_cl import get_cl_statuses, color_for_status, Changelist
 
-      status_info = get_cl_statuses(self.__branches_info.keys(),
+      change_cls = [Changelist(branchref='refs/heads/'+b)
+                    for b in self.__branches_info.keys() if b]
+      status_info = get_cl_statuses(change_cls,
                                     fine_grained=self.verbosity > 2,
                                     max_processes=self.maxjobs)
 
-      for _ in xrange(len(self.__branches_info)):
-        # This is a blocking get which waits for the remote CL status to be
-        # retrieved.
-        (branch, url, status) = status_info.next()
-        self.__status_info[branch] = (url, color_for_status(status))
+      # This is a blocking get which waits for the remote CL status to be
+      # retrieved.
+      for cl, status in status_info:
+        self.__status_info[cl.GetBranch()] = (cl.GetIssueURL(),
+                                              color_for_status(status),
+                                              status)
 
     roots = set()
 
@@ -258,13 +261,16 @@ class BranchMapper(object):
 
     # The Rietveld issue associated with the branch.
     if self.verbosity >= 2:
-      none_text = '' if self.__is_invalid_parent(branch) else 'None'
-      (url, color) = self.__status_info[branch]
-      line.append(url or none_text, color=color)
+      (url, color, status) = ('', '', '') if self.__is_invalid_parent(branch) \
+          else self.__status_info[branch]
+      if self.verbosity > 2:
+        line.append('{} ({})'.format(url, status) if url else '', color=color)
+      else:
+        line.append(url or '', color=color)
 
     # The subject of the most recent commit on the branch.
     if self.show_subject:
-      line.append(run('log', '-n1', '--format=%s', branch))
+      line.append(run('log', '-n1', '--format=%s', branch, '--'))
 
     self.output.append(line)
 

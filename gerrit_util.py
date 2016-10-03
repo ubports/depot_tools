@@ -326,7 +326,7 @@ def ReadHttpResponse(conn, expect_status=200, ignore_404=True):
     # A status >=500 is assumed to be a possible transient error; retry.
     http_version = 'HTTP/%s' % ('1.1' if response.version == 11 else '1.0')
     msg = (
-        'A transient error occured while querying %s:\n'
+        'A transient error occurred while querying %s:\n'
         '%s %s %s\n'
         '%s %d %s' % (
             conn.host, conn.req_params['method'], conn.req_params['url'],
@@ -545,6 +545,30 @@ def SubmitChange(host, change, wait_for_merge=True):
   return ReadHttpJsonResponse(conn, ignore_404=False)
 
 
+def HasPendingChangeEdit(host, change):
+  conn = CreateHttpConn(host, 'changes/%s/edit' % change)
+  try:
+    ReadHttpResponse(conn, ignore_404=False)
+  except GerritError as e:
+    # On success, gerrit returns status 204; anything else is an error.
+    if e.http_status != 204:
+      raise
+    return False
+  else:
+    return True
+
+
+def DeletePendingChangeEdit(host, change):
+  conn = CreateHttpConn(host, 'changes/%s/edit' % change, reqtype='DELETE')
+  try:
+    ReadHttpResponse(conn, ignore_404=False)
+  except GerritError as e:
+    # On success, gerrit returns status 204; if the edit was already deleted it
+    # returns 404.  Anything else is an error.
+    if e.http_status not in (204, 404):
+      raise
+
+
 def SetCommitMessage(host, change, description):
   """Updates a commit message."""
   # First, edit the commit message in a draft.
@@ -589,7 +613,7 @@ def GetReview(host, change, revision):
   return ReadHttpJsonResponse(CreateHttpConn(host, path))
 
 
-def AddReviewers(host, change, add=None):
+def AddReviewers(host, change, add=None, is_reviewer=True):
   """Add reviewers to a change."""
   if not add:
     return
@@ -597,7 +621,10 @@ def AddReviewers(host, change, add=None):
     add = (add,)
   path = 'changes/%s/reviewers' % change
   for r in add:
-    body = {'reviewer': r}
+    body = {
+      'reviewer': r,
+      'state': 'REVIEWER' if is_reviewer else 'CC',
+    }
     conn = CreateHttpConn(host, path, reqtype='POST', body=body)
     jmsg = ReadHttpJsonResponse(conn, ignore_404=False)
   return jmsg

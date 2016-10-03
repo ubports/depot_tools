@@ -214,7 +214,7 @@ class DependencySettings(GClientKeywords):
   """Immutable configuration settings."""
   def __init__(
       self, parent, url, safesync_url, managed, custom_deps, custom_vars,
-      custom_hooks, deps_file, should_process):
+      custom_hooks, deps_file, should_process, relative):
     GClientKeywords.__init__(self)
 
     # These are not mutable:
@@ -230,6 +230,11 @@ class DependencySettings(GClientKeywords):
     # recursion limit and controls gclient's behavior so it does not misbehave.
     self._managed = managed
     self._should_process = should_process
+    # If this is a recursed-upon sub-dependency, and the parent has
+    # use_relative_paths set, then this dependency should check out its own
+    # dependencies relative to that parent's path for this, rather than
+    # relative to the .gclient file.
+    self._relative = relative
     # This is a mutable value which has the list of 'target_os' OSes listed in
     # the current deps file.
     self.local_target_os = None
@@ -325,11 +330,12 @@ class Dependency(gclient_utils.WorkItem, DependencySettings):
   """Object that represents a dependency checkout."""
 
   def __init__(self, parent, name, url, safesync_url, managed, custom_deps,
-               custom_vars, custom_hooks, deps_file, should_process):
+               custom_vars, custom_hooks, deps_file, should_process,
+               relative):
     gclient_utils.WorkItem.__init__(self, name)
     DependencySettings.__init__(
         self, parent, url, safesync_url, managed, custom_deps, custom_vars,
-        custom_hooks, deps_file, should_process)
+        custom_hooks, deps_file, should_process, relative)
 
     # This is in both .gclient and DEPS files:
     self._deps_hooks = []
@@ -375,6 +381,11 @@ class Dependency(gclient_utils.WorkItem, DependencySettings):
     # It will be a dictionary of {deps_name: {"deps_file": depfile_name}} or
     # None.
     self.recursedeps = None
+    # This is inherited from WorkItem.  We want the URL to be a resource.
+    if url and isinstance(url, basestring):
+      # The url is usually given to gclient either as https://blah@123
+      # or just https://blah.  The @123 portion is irrelevant.
+      self.resources.append(url.split('@')[0])
 
     if not self.name and self.parent:
       raise gclient_utils.Error('Dependency without name')
@@ -564,7 +575,7 @@ class Dependency(gclient_utils.WorkItem, DependencySettings):
     # than in the os list), then it wants to use the default value.
     for os_dep_key, os_dep_value in os_overrides.iteritems():
       if len(os_dep_value) != len(target_os_list):
-        # Record the default value too so that we don't accidently
+        # Record the default value too so that we don't accidentally
         # set it to None or miss a conflicting DEPS.
         if os_dep_key in deps:
           os_dep_value.append(('default', deps[os_dep_key]))
@@ -681,24 +692,35 @@ class Dependency(gclient_utils.WorkItem, DependencySettings):
     # the dictionary using paths relative to the directory containing
     # the DEPS file.  Also update recursedeps if use_relative_paths is
     # enabled.
+    # If the deps file doesn't set use_relative_paths, but the parent did
+    # (and therefore set self.relative on this Dependency object), then we
+    # want to modify the deps and recursedeps by prepending the parent
+    # directory of this dependency.
     use_relative_paths = local_scope.get('use_relative_paths', False)
+    rel_prefix = None
     if use_relative_paths:
+      rel_prefix = self.name
+    elif self._relative:
+      rel_prefix = os.path.dirname(self.name)
+    if rel_prefix:
       logging.warning('use_relative_paths enabled.')
       rel_deps = {}
       for d, url in deps.items():
         # normpath is required to allow DEPS to use .. in their
         # dependency local path.
-        rel_deps[os.path.normpath(os.path.join(self.name, d))] = url
-      logging.warning('Updating deps by prepending %s.', self.name)
+        rel_deps[os.path.normpath(os.path.join(rel_prefix, d))] = url
+      logging.warning('Updating deps by prepending %s.', rel_prefix)
       deps = rel_deps
 
       # Update recursedeps if it's set.
       if self.recursedeps is not None:
-        logging.warning('Updating recursedeps by prepending %s.', self.name)
+        logging.warning('Updating recursedeps by prepending %s.', rel_prefix)
         rel_deps = {}
         for depname, options in self.recursedeps.iteritems():
-          rel_deps[os.path.normpath(os.path.join(self.name, depname))] = options
+          rel_deps[
+              os.path.normpath(os.path.join(rel_prefix, depname))] = options
         self.recursedeps = rel_deps
+
 
     if 'allowed_hosts' in local_scope:
       try:
@@ -723,7 +745,7 @@ class Dependency(gclient_utils.WorkItem, DependencySettings):
           deps_file = ent['deps_file']
       deps_to_add.append(Dependency(
           self, name, url, None, None, None, self.custom_vars, None,
-          deps_file, should_process))
+          deps_file, should_process, use_relative_paths))
     deps_to_add.sort(key=lambda x: x.name)
 
     # override named sets of hooks by the custom hooks
@@ -1212,7 +1234,7 @@ solutions = [
     # are processed.
     self._recursion_limit = 2
     Dependency.__init__(self, None, None, None, None, True, None, None, None,
-                        'unused', True)
+                        'unused', True, None)
     self._options = options
     if options.deps_os:
       enforced_os = options.deps_os.split(',')
@@ -1233,12 +1255,19 @@ solutions = [
             dep.url, self.root_dir, dep.name, self.outbuf)
         actual_url = scm.GetActualRemoteURL(self._options)
         if actual_url and not scm.DoesRemoteURLMatch(self._options):
+          mirror = scm.GetCacheMirror()
+          if mirror:
+            mirror_string = '%s (exists=%s)' % (mirror.mirror_path,
+                                                mirror.exists())
+          else:
+            mirror_string = 'not used'
           raise gclient_utils.Error('''
 Your .gclient file seems to be broken. The requested URL is different from what
 is actually checked out in %(checkout_path)s.
 
 The .gclient file contains:
-%(expected_url)s (%(expected_scm)s)
+URL: %(expected_url)s (%(expected_scm)s)
+Cache mirror: %(mirror_string)s
 
 The local checkout in %(checkout_path)s reports:
 %(actual_url)s (%(actual_scm)s)
@@ -1250,6 +1279,7 @@ want to set 'managed': False in .gclient.
 '''  % {'checkout_path': os.path.join(self.root_dir, dep.name),
         'expected_url': dep.url,
         'expected_scm': gclient_scm.GetScmName(dep.url),
+        'mirror_string' : mirror_string,
         'actual_url': actual_url,
         'actual_scm': gclient_scm.GetScmName(actual_url)})
 
@@ -1305,7 +1335,8 @@ want to set 'managed': False in .gclient.
             s.get('custom_vars', {}),
             s.get('custom_hooks', []),
             s.get('deps_file', 'DEPS'),
-            True))
+            True,
+            None))
       except KeyError:
         raise gclient_utils.Error('Invalid .gclient file. Solution is '
                                   'incomplete: %s' % s)
@@ -1779,7 +1810,7 @@ def CMDrecurse(parser, args):
   """Operates [command args ...] on all the dependencies.
 
   Runs a shell command on all entries.
-  Sets GCLIENT_DEP_PATH enviroment variable as the dep's relative location to
+  Sets GCLIENT_DEP_PATH environment variable as the dep's relative location to
   root directory of the checkout.
   """
   # Stop parsing at the first non-arg so that these go through to the command
@@ -2151,6 +2182,7 @@ def CMDrevert(parser, args):
   options.force = True
   options.reset = False
   options.delete_unversioned_trees = False
+  options.merge = False
   client = GClient.LoadCurrentConfig(options)
   if not client:
     raise gclient_utils.Error('client not configured; see \'gclient config\'')

@@ -773,6 +773,8 @@ exactly the same working state later (by running <code>git thaw</code>).</p></di
 with <em>git add</em>, <em>git mv</em>, <em>git rm</em>, etc.). A commit with the message
 <code>FREEZE.unindexed</code> will contain all changes which were not in your index at the
 time you ran git freeze (freshly modified files, new files, etc.).</p></div>
+<div class="paragraph"><p>By default <code>git freeze</code> will only freeze up to 100MB of untracked files. See
+<em>CONFIGURATION VARIABLES</em> for more details.</p></div>
 </div>
 </div>
 <div class="sect1">
@@ -788,7 +790,7 @@ time you ran git freeze (freshly modified files, new files, etc.).</p></div>
 <span style="font-weight: bold; color: #ffffff">$ git freeze</span>
 <span style="font-weight: bold; color: #ffffff">$ git status --short</span>
 <span style="font-weight: bold; color: #ffffff">$ git log -n 2 --stat</span>
-<span style="color: #e7e71c">commit 648c29b68da0142bcad41872339f9732c6ec4470</span>
+<span style="color: #e7e71c">commit 42c38320f46c6bc9a8aba7f15b41971e5f1db75b</span>
 Author: local &lt;local@chromium.org&gt;
 Date:   Thu Apr 10 08:54:56 2014 +0000
 
@@ -800,7 +802,7 @@ Date:   Thu Apr 10 08:54:56 2014 +0000
  unstaged_deleted_file            | 1 <span style="color: #e42e16">-</span>
  4 files changed, 2 insertions(+), 1 deletion(-)
 
-<span style="color: #e7e71c">commit a4e49c2896814f52feec3fc06ef0454962ee6b8c</span>
+<span style="color: #e7e71c">commit 5e0079a0fd55960682c389e71e0283594a80c02b</span>
 Author: local &lt;local@chromium.org&gt;
 Date:   Thu Apr 10 08:54:56 2014 +0000
 
@@ -822,6 +824,17 @@ Date:   Thu Apr 10 08:54:56 2014 +0000
 </div>
 </div>
 <div class="sect1">
+<h2 id="_configuration_variables">CONFIGURATION VARIABLES</h2>
+<div class="sectionbody">
+<div class="sect2">
+<h3 id="_depot_tools_freeze_size_limit">depot-tools.freeze-size-limit</h3>
+<div class="paragraph"><p>This sets the size limit as an integer number of megabytes of untracked files
+that git-freeze will be willing to put in suspended animation. A 0 or negative
+limit disables the size-limit check entirely. <strong>100</strong> by default.</p></div>
+</div>
+</div>
+</div>
+<div class="sect1">
 <h2 id="_see_also">SEE ALSO</h2>
 <div class="sectionbody">
 <div class="paragraph"><p><a href="git-thaw.html">git-thaw(1)</a></p></div>
@@ -832,14 +845,14 @@ Date:   Thu Apr 10 08:54:56 2014 +0000
 <div class="sectionbody">
 <div class="paragraph"><p>Part of the chromium <a href="depot_tools.html">depot_tools(7)</a> suite. These tools are meant to
 assist with the development of chromium and related projects. Download the tools
-from <a href="https://chromium.googlesource.com/chromium/tools/depot_tools.git">here</a>.</p></div>
+from <a href="https://chromium.googlesource.com/chromium/tools/depot_tools">here</a>.</p></div>
 </div>
 </div>
 </div>
 <div id="footnotes"><hr /></div>
 <div id="footer">
 <div id="footer-text">
-Last updated 2014-04-10 14:23:11 PDT
+Last updated 2016-07-21 10:09:00 PDT
 </div>
 </div>
 </body>

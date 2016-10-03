@@ -16,7 +16,7 @@ import cpplint
 import cPickle  # Exposed through the API.
 import cStringIO  # Exposed through the API.
 import contextlib
-import fnmatch
+import fnmatch  # Exposed through the API.
 import glob
 import inspect
 import itertools
@@ -244,13 +244,10 @@ class GerritAccessor(object):
     return self.GetChangeInfo(issue)['owner']['email']
 
   def GetChangeReviewers(self, issue, approving_only=True):
-    # Gerrit has 'approved' sub-section, but it only lists 1 approver.
-    # So, if we look only for approvers, we have to look at all anyway.
-    # Also, assume LGTM means Code-Review label == 2. Other configurations
-    # aren't supported.
-    return [r['email']
-            for r in self.GetChangeInfo(issue)['labels']['Code-Review']['all']
-            if not approving_only or '2' == str(r.get('value', 0))]
+    cr = self.GetChangeInfo(issue)['labels']['Code-Review']
+    max_value = max(int(k) for k in cr['values'].keys())
+    return [r['email'] for r in cr['all']
+            if not approving_only or r.get('value', 0) == max_value]
 
 
 class OutputApi(object):
@@ -348,6 +345,7 @@ class InputApi(object):
     self.cPickle = cPickle
     self.cpplint = cpplint
     self.cStringIO = cStringIO
+    self.fnmatch = fnmatch
     self.glob = glob.glob
     self.json = json
     self.logging = logging.getLogger('PRESUBMIT')
@@ -389,7 +387,7 @@ class InputApi(object):
     # TODO(dpranke): figure out a list of all approved owners for a repo
     # in order to be able to handle wildcard OWNERS files?
     self.owners_db = owners.Database(change.RepositoryRoot(),
-        fopen=file, os_path=self.os_path, glob=self.glob)
+        fopen=file, os_path=self.os_path)
     self.verbose = verbose
     self.Command = CommandData
 
@@ -496,7 +494,6 @@ class InputApi(object):
       local_path = affected_file.LocalPath()
       for item in items:
         if self.re.match(item, local_path):
-          logging.debug("%s matched %s" % (item, local_path))
           return True
       return False
     return (Find(affected_file, white_list or self.DEFAULT_WHITE_LIST) and
@@ -564,6 +561,11 @@ class InputApi(object):
     else:
       msgs.extend(map(CallCommand, tests))
     return [m for m in msgs if m]
+
+  def ShutdownPool(self):
+    self._run_tests_pool.close()
+    self._run_tests_pool.join()
+    self._run_tests_pool = None
 
 
 class _DiffCache(object):
@@ -648,7 +650,7 @@ class AffectedFile(object):
     self._cached_changed_contents = None
     self._cached_new_contents = None
     self._diff_cache = diff_cache
-    logging.debug('%s(%s)' % (self.__class__.__name__, self._path))
+    logging.debug('%s(%s)', self.__class__.__name__, self._path)
 
   def ServerPath(self):
     """Returns a path string that identifies the file in the SCM system.
@@ -1011,32 +1013,6 @@ class SvnChange(Change):
   scm = 'svn'
   _changelists = None
 
-  def _GetChangeLists(self):
-    """Get all change lists."""
-    if self._changelists == None:
-      previous_cwd = os.getcwd()
-      os.chdir(self.RepositoryRoot())
-      # Need to import here to avoid circular dependency.
-      import gcl
-      self._changelists = gcl.GetModifiedFiles()
-      os.chdir(previous_cwd)
-    return self._changelists
-
-  def GetAllModifiedFiles(self):
-    """Get all modified files."""
-    changelists = self._GetChangeLists()
-    all_modified_files = []
-    for cl in changelists.values():
-      all_modified_files.extend(
-          [os.path.join(self.RepositoryRoot(), f[1]) for f in cl])
-    return all_modified_files
-
-  def GetModifiedFiles(self):
-    """Get modified files in the current CL."""
-    changelists = self._GetChangeLists()
-    return [os.path.join(self.RepositoryRoot(), f[1])
-            for f in changelists[self.Name()]]
-
   def AllFiles(self, root=None):
     """List all files under source control in the repo."""
     root = root or self.RepositoryRoot()
@@ -1095,11 +1071,16 @@ def ListRelevantPresubmitFiles(files, root):
   # Look for PRESUBMIT.py in all candidate directories.
   results = []
   for directory in sorted(list(candidates)):
-    p = os.path.join(directory, 'PRESUBMIT.py')
-    if os.path.isfile(p):
-      results.append(p)
+    try:
+      for f in os.listdir(directory):
+        p = os.path.join(directory, f)
+        if os.path.isfile(p) and re.match(
+            r'PRESUBMIT.*\.py$', f) and not f.startswith('PRESUBMIT_test'):
+          results.append(p)
+    except OSError:
+      pass
 
-  logging.debug('Presubmit files: %s' % ','.join(results))
+  logging.debug('Presubmit files: %s', ','.join(results))
   return results
 
 
@@ -1410,7 +1391,7 @@ class PresubmitExecuter(object):
     """
     Args:
       change: The Change object.
-      committing: True if 'gcl commit' is running, False if 'gcl upload' is.
+      committing: True if 'git cl land' is running, False if 'git cl upload' is.
       rietveld_obj: rietveld.Rietveld client object.
       gerrit_obj: provides basic Gerrit codereview functionality.
       dry_run: if true, some Checks will be skipped.
@@ -1456,9 +1437,9 @@ class PresubmitExecuter(object):
       function_name = 'CheckChangeOnUpload'
     if function_name in context:
       context['__args'] = (input_api, OutputApi(self.committing))
-      logging.debug('Running %s in %s' % (function_name, presubmit_path))
+      logging.debug('Running %s in %s', function_name, presubmit_path)
       result = eval(function_name + '(*__args)', context)
-      logging.debug('Running %s done.' % function_name)
+      logging.debug('Running %s done.', function_name)
       if not (isinstance(result, types.TupleType) or
               isinstance(result, types.ListType)):
         raise PresubmitFailure(
@@ -1470,6 +1451,8 @@ class PresubmitExecuter(object):
             'output_api.PresubmitResult')
     else:
       result = ()  # no error since the script doesn't care about current event.
+
+    input_api.ShutdownPool()
 
     # Return the process to the original working directory.
     os.chdir(main_path)
@@ -1497,7 +1480,7 @@ def DoPresubmitChecks(change,
 
   Args:
     change: The Change object.
-    committing: True if 'gcl commit' is running, False if 'gcl upload' is.
+    committing: True if 'git cl land' is running, False if 'git cl upload' is.
     verbose: Prints debug info.
     output_stream: A stream to write output from presubmit tests to.
     input_stream: A stream to read input from the user.
@@ -1611,7 +1594,7 @@ def ScanSubDirs(mask, recursive):
 
 
 def ParseFiles(args, recursive):
-  logging.debug('Searching for %s' % args)
+  logging.debug('Searching for %s', args)
   files = []
   for arg in args:
     files.extend([('M', f) for f in ScanSubDirs(arg, recursive)])
@@ -1634,7 +1617,7 @@ def load_files(options, args):
     if not files:
       files = scm.GIT.CaptureStatus([], options.root, upstream)
   else:
-    logging.info('Doesn\'t seem under source control. Got %d files' % len(args))
+    logging.info('Doesn\'t seem under source control. Got %d files', len(args))
     if not files:
       return None, None
     change_class = Change
@@ -1756,7 +1739,7 @@ def main(argv=None):
   change_class, files = load_files(options, args)
   if not change_class:
     parser.error('For unversioned directory, <files> is not optional.')
-  logging.info('Found %d file(s).' % len(files))
+  logging.info('Found %d file(s).', len(files))
 
   rietveld_obj, gerrit_obj = None, None
 
@@ -1828,4 +1811,4 @@ if __name__ == '__main__':
     sys.exit(main())
   except KeyboardInterrupt:
     sys.stderr.write('interrupted\n')
-    sys.exit(1)
+    sys.exit(2)

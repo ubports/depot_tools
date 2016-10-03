@@ -16,7 +16,7 @@ class GitApi(recipe_api.RecipeApi):
 
   def __call__(self, *args, **kwargs):
     """Return a git command step."""
-    name = kwargs.pop('name', 'git '+args[0])
+    name = kwargs.pop('name', 'git ' + args[0])
     infra_step = kwargs.pop('infra_step', True)
     if 'cwd' not in kwargs:
       kwargs.setdefault('cwd', self.m.path['checkout'])
@@ -41,11 +41,13 @@ class GitApi(recipe_api.RecipeApi):
     """Ensures that depot_tools/git.bat actually exists."""
     if not self.m.platform.is_win or self.initialized_win_git:
       return
-    self.m.step(
+    self.m.python(
         'ensure git tooling on windows',
-        [self.package_repo_resource('bootstrap', 'win', 'win_tools.bat')],
+        self.package_repo_resource('bootstrap', 'win', 'git_bootstrap.py'),
+        ['--verbose'],
         infra_step=True,
-        cwd=self.package_repo_resource())
+        cwd=self.package_repo_resource(),
+        timeout=300)
     self.initialized_win_git = True
 
   def fetch_tags(self, remote_name=None, **kwargs):
@@ -132,8 +134,10 @@ class GitApi(recipe_api.RecipeApi):
                curl_trace_file=None, can_fail_build=True,
                set_got_revision=False, remote_name=None,
                display_fetch_size=None, file_name=None,
-               submodule_update_recursive=True):
-    """Returns an iterable of steps to perform a full git checkout.
+               submodule_update_recursive=True,
+               use_git_cache=False):
+    """Performs a full git checkout and returns sha1 of checked out revision.
+
     Args:
       url (str): url of remote repo to use as upstream
       ref (str): ref to fetch and check out
@@ -156,6 +160,13 @@ class GitApi(recipe_api.RecipeApi):
       file_name (str): optional path to a single file to checkout.
       submodule_update_recursive (bool): if True, updates submodules
           recursively.
+      use_git_cache (bool): if True, git cache will be used for this checkout.
+          WARNING, this is EXPERIMENTAL!!! This wasn't tested with:
+           * submodules
+           * since origin url is modified
+             to a local path, may cause problem with scripts that do
+             "git fetch origin" or "git push origin".
+           * arbitrary refs such refs/whatever/not-fetched-by-default-to-cache
 
     Returns: If the checkout was successful, this returns the commit hash of
       the checked-out-repo. Otherwise this returns None.
@@ -198,6 +209,29 @@ class GitApi(recipe_api.RecipeApi):
         self.resource('git_setup.py'),
         git_setup_args)
 
+    # Some of the commands below require depot_tools to be in PATH.
+    path = self.m.path.pathsep.join([
+        str(self.package_repo_resource()), '%(PATH)s'])
+
+    if use_git_cache:
+      with self.m.step.context({'env': {'PATH': path}}):
+        self('retry', 'cache', 'populate', '-c', self.m.path['git_cache'], url,
+             name='populate cache',
+             can_fail_build=can_fail_build,
+             cwd=dir_path)
+        dir_cmd = self(
+            'cache', 'exists', '--quiet',
+            '--cache-dir', self.m.path['git_cache'], url,
+            can_fail_build=can_fail_build,
+            stdout=self.m.raw_io.output(),
+            step_test_data=lambda:
+                self.m.raw_io.test_api.stream_output('mirror_dir'),
+            cwd=dir_path)
+        mirror_dir = dir_cmd.stdout.strip()
+        self('remote', 'set-url', 'origin', mirror_dir,
+             can_fail_build=can_fail_build,
+             cwd=dir_path)
+
     # There are five kinds of refs we can be handed:
     # 0) None. In this case, we default to properties['branch'].
     # 1) A 40-character SHA1 hash.
@@ -230,7 +264,7 @@ class GitApi(recipe_api.RecipeApi):
     if recursive:
       fetch_args.append('--recurse-submodules')
 
-    fetch_env = {}
+    fetch_env = {'PATH': path}
     fetch_stderr = None
     if curl_trace_file:
       fetch_env['GIT_CURL_VERBOSE'] = '1'
@@ -375,3 +409,22 @@ class GitApi(recipe_api.RecipeApi):
     if not rev_list_args:
       rev_list_args = ['--all']
     self('bundle', 'create', bundle_path, *rev_list_args, **kwargs)
+
+  def new_branch(self, branch, name=None, upstream=None, **kwargs):
+    """Runs git new-branch on a Git repository, to be used before git cl upload.
+
+    Args:
+      branch (str): new branch name, which must not yet exist.
+      name (str): step name.
+      upstream (str): to origin/master.
+      kwargs: Forwarded to '__call__'.
+    """
+    env = kwargs.pop('env', {})
+    env['PATH'] = self.m.path.pathsep.join([
+        str(self.package_repo_resource()), '%(PATH)s'])
+    args = ['new-branch', branch]
+    if upstream:
+      args.extend(['--upstream', upstream])
+    if not name:
+      name = 'git new-branch %s' % branch
+    return self(*args, name=name, env=env, **kwargs)

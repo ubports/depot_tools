@@ -1,10 +1,14 @@
 [
   {
     "cmd": [
-      "RECIPE_PACKAGE_REPO[depot_tools]\\bootstrap\\win\\win_tools.bat"
+      "python",
+      "-u",
+      "RECIPE_PACKAGE_REPO[depot_tools]\\bootstrap\\win\\git_bootstrap.py",
+      "--verbose"
     ],
     "cwd": "RECIPE_PACKAGE_REPO[depot_tools]",
-    "name": "ensure git tooling on windows"
+    "name": "ensure git tooling on windows",
+    "timeout": 300
   },
   {
     "cmd": [
@@ -30,6 +34,9 @@
       "--recurse-submodules"
     ],
     "cwd": "[SLAVE_BUILD]\\src",
+    "env": {
+      "PATH": "RECIPE_PACKAGE_REPO[depot_tools];%(PATH)s"
+    },
     "name": "git fetch"
   },
   {
@@ -157,6 +164,32 @@
     ],
     "cwd": "[SLAVE_BUILD]\\src",
     "name": "git status cannot_fail_build"
+  },
+  {
+    "cmd": [
+      "RECIPE_PACKAGE_REPO[depot_tools]\\git.bat",
+      "new-branch",
+      "refactor"
+    ],
+    "cwd": "[SLAVE_BUILD]\\src",
+    "env": {
+      "PATH": "RECIPE_PACKAGE_REPO[depot_tools];%(PATH)s"
+    },
+    "name": "git new-branch refactor"
+  },
+  {
+    "cmd": [
+      "RECIPE_PACKAGE_REPO[depot_tools]\\git.bat",
+      "new-branch",
+      "feature",
+      "--upstream",
+      "refactor"
+    ],
+    "cwd": "[SLAVE_BUILD]\\src",
+    "env": {
+      "PATH": "RECIPE_PACKAGE_REPO[depot_tools];%(PATH)s"
+    },
+    "name": "git new-branch feature"
   },
   {
     "cmd": [

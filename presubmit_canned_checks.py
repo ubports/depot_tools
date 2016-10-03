@@ -211,6 +211,26 @@ def CheckChangeHasNoCrAndHasOnlyOneEol(input_api, output_api,
       items=eof_files))
   return outputs
 
+def CheckGenderNeutral(input_api, output_api, source_file_filter=None):
+  """Checks that there are no gendered pronouns in any of the text files to be
+  submitted.
+  """
+  gendered_re = input_api.re.compile(
+      '(^|\s|\(|\[)([Hh]e|[Hh]is|[Hh]ers?|[Hh]im|[Ss]he|[Gg]uys?)\\b')
+
+  errors = []
+  for f in input_api.AffectedFiles(include_deletes=False,
+                                   file_filter=source_file_filter):
+    for line_num, line in f.ChangedContents():
+      if gendered_re.search(line):
+        errors.append('%s (%d): %s' % (f.LocalPath(), line_num, line))
+
+  if len(errors):
+    return [output_api.PresubmitPromptWarning('Found a gendered pronoun in:',
+                                              long_text='\n'.join(errors))]
+  return []
+
+
 
 def _ReportErrorFileAndLine(filename, line_num, dummy_line):
   """Default error formatter for _FindNewViolationsOfRule."""
@@ -351,7 +371,7 @@ def CheckLongLines(input_api, output_api, maxlen, source_file_filter=None):
     if any((url in line) for url in ('file://', 'http://', 'https://')):
       return True
 
-    # If 'line-too-long' is explictly suppressed for the line, any length is
+    # If 'line-too-long' is explicitly suppressed for the line, any length is
     # acceptable.
     if 'pylint: disable=line-too-long' in line and file_extension == 'py':
       return True
@@ -979,6 +999,8 @@ def _GerritOwnerAndReviewers(input_api, email_regexp, approval_needed=False):
   reviewers = set(
       r for r in input_api.gerrit.GetChangeReviewers(issue, approval_needed)
       if _match_reviewer_email(r, owner_email, email_regexp))
+  input_api.logging.debug('owner: %s; approvals given by: %s',
+                          owner_email, ', '.join(sorted(reviewers)))
   return owner_email, reviewers
 
 
@@ -1150,14 +1172,15 @@ def CheckGNFormatted(input_api, output_api):
   affected_files = input_api.AffectedFiles(
       include_deletes=False,
       file_filter=lambda x: x.LocalPath().endswith('.gn') or
-                            x.LocalPath().endswith('.gni'))
+                            x.LocalPath().endswith('.gni') or
+                            x.LocalPath().endswith('.typemap'))
   warnings = []
   for f in affected_files:
     cmd = ['gn', 'format', '--dry-run', f.AbsoluteLocalPath()]
     rc = gn.main(cmd)
     if rc == 2:
       warnings.append(output_api.PresubmitPromptWarning(
-          '%s requires formatting. Please run `gn format --in-place %s`.' % (
+          '%s requires formatting. Please run:\n  gn format %s' % (
               f.AbsoluteLocalPath(), f.LocalPath())))
   # It's just a warning, so ignore other types of failures assuming they'll be
   # caught elsewhere.

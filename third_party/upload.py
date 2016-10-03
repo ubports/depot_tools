@@ -34,7 +34,8 @@ against by using the '--rev' option.
 # This code is derived from appcfg.py in the App Engine SDK (open source),
 # and from ASPN recipe #146306.
 
-import ConfigParser
+from __future__ import print_function
+
 import cookielib
 import errno
 import fnmatch
@@ -53,6 +54,12 @@ import urllib2
 import urlparse
 
 from multiprocessing.pool import ThreadPool
+
+# The configparser module was renamed in Python 3.
+try:
+  import configparser
+except ImportError:
+  import ConfigParser as configparser
 
 # The md5 module was deprecated in Python 2.5.
 try:
@@ -144,7 +151,7 @@ def GetEmail(prompt):
       last_email = last_email_file.readline().strip("\n")
       last_email_file.close()
       prompt += " [%s]" % last_email
-    except IOError, e:
+    except IOError as e:
       pass
   email = raw_input(prompt + ": ").strip()
   if email:
@@ -152,7 +159,7 @@ def GetEmail(prompt):
       last_email_file = open(last_email_file_name, "w")
       last_email_file.write(email)
       last_email_file.close()
-    except IOError, e:
+    except IOError as e:
       pass
   else:
     email = last_email
@@ -168,12 +175,12 @@ def StatusUpdate(msg):
     msg: The string to print.
   """
   if verbosity > 0:
-    print msg
+    print(msg)
 
 
 def ErrorExit(msg):
   """Print an error message to stderr and exit."""
-  print >> sys.stderr, msg
+  print(msg, file=sys.stderr)
   sys.exit(1)
 
 
@@ -286,7 +293,7 @@ class AbstractRpcServer(object):
       response_dict = dict(x.split("=")
                            for x in response_body.split("\n") if x)
       return response_dict["Auth"]
-    except urllib2.HTTPError, e:
+    except urllib2.HTTPError as e:
       if e.code == 403:
         body = e.read()
         response_dict = dict(x.split("=", 1) for x in body.split("\n") if x)
@@ -311,7 +318,7 @@ class AbstractRpcServer(object):
                               (self.host, urllib.urlencode(args)))
     try:
       response = self.opener.open(req)
-    except urllib2.HTTPError, e:
+    except urllib2.HTTPError as e:
       response = e
     if (response.code != 302 or
         response.info()["location"] != continue_location):
@@ -355,10 +362,10 @@ class AbstractRpcServer(object):
           }
           auth_token = self._GetAuthToken(credentials[0], credentials[1],
                                           internal=True)
-        except ClientLoginError, exc:
+        except ClientLoginError as exc:
           e = exc
       if e:
-        print >> sys.stderr, ''
+        print('', file=sys.stderr)
         error_message = e.reason
         if error_map:
           error_message = error_map.get(error_message, error_message)
@@ -370,7 +377,7 @@ class AbstractRpcServer(object):
                 "See http://www.google.com/"
                 "support/accounts/bin/answer.py?answer=185833")
           else:
-            print >> sys.stderr, "Invalid username or password."
+            print("Invalid username or password.", file=sys.stderr)
         elif error_message == "CaptchaRequired":
           print >> sys.stderr, (
               "Please go to\n"
@@ -379,23 +386,24 @@ class AbstractRpcServer(object):
               "If you are using a Google Apps account the URL is:\n"
               "https://www.google.com/a/yourdomain.com/UnlockCaptcha")
         elif error_message == "NotVerified":
-          print >> sys.stderr, "Account not verified."
+          print("Account not verified.", file=sys.stderr)
         elif error_message == "TermsNotAgreed":
-          print >> sys.stderr, "User has not agreed to TOS."
+          print("User has not agreed to TOS.", file=sys.stderr)
         elif error_message == "AccountDeleted":
-          print >> sys.stderr, "The user account has been deleted."
+          print("The user account has been deleted.", file=sys.stderr)
         elif error_message == "AccountDisabled":
-          print >> sys.stderr, "The user account has been disabled."
+          print("The user account has been disabled.", file=sys.stderr)
           break
         elif error_message == "ServiceDisabled":
-          print >> sys.stderr, ("The user's access to the service has been "
-                               "disabled.")
+          print("The user's access to the service has been disabled.",
+                file=sys.stderr)
         elif error_message == "ServiceUnavailable":
-          print >> sys.stderr, "The service is not available; try again later."
+          print("The service is not available; try again later.",
+                file=sys.stderr)
         else:
           # Unknown error.
           raise e
-        print >> sys.stderr, ''
+        print('', file=sys.stderr)
         continue
       self._GetAuthCookie(auth_token)
       return
@@ -447,7 +455,7 @@ class AbstractRpcServer(object):
           response = f.read()
           f.close()
           return response
-        except urllib2.HTTPError, e:
+        except urllib2.HTTPError as e:
           if tries > 3:
             raise
           elif e.code in (302, 401, 403):
@@ -525,10 +533,10 @@ class HttpRpcServer(AbstractRpcServer):
           pass
       else:
         # Create an empty cookie file with mode 600
-        fd = os.open(self.cookie_file, os.O_CREAT, 0600)
+        fd = os.open(self.cookie_file, os.O_CREAT, 0o600)
         os.close(fd)
       # Always chmod the cookie file
-      os.chmod(self.cookie_file, 0600)
+      os.chmod(self.cookie_file, 0o600)
     else:
       # Don't save cookies across runs of update.py.
       self.cookie_jar = cookielib.CookieJar()
@@ -624,10 +632,6 @@ group = parser.add_option_group("Patch options")
 group.add_option("-i", "--issue", type="int", action="store",
                  metavar="ISSUE", default=None,
                  help="Issue number to which to add. Defaults to new issue.")
-group.add_option("--base_url", action="store", dest="base_url", default=None,
-                 help="Base URL path for files (listed as \"Base URL\" when "
-                 "viewing issue).  If omitted, will be guessed automatically "
-                 "for SVN repos and left blank for others.")
 group.add_option("--target_ref", action="store", dest="target_ref",
                  default=None,
                  help="The target ref that is transitively tracked by the "
@@ -720,10 +724,10 @@ class KeyringCreds(object):
       except:
         # Sadly, we have to trap all errors here as
         # gnomekeyring.IOError inherits from object. :/
-        print "Failed to get password from keyring"
+        print("Failed to get password from keyring")
         keyring = None
     if password is not None:
-      print "Using password from system keyring."
+      print("Using password from system keyring.")
       self.accounts_seen.add(email)
     else:
       password = getpass.getpass("Password for %s: " % email)
@@ -920,9 +924,9 @@ class VersionControlSystem(object):
     """Show an "are you sure?" prompt if there are unknown files."""
     unknown_files = self.GetUnknownFiles()
     if unknown_files:
-      print "The following files are not added to version control:"
+      print("The following files are not added to version control:")
       for line in unknown_files:
-        print line
+        print(line)
       prompt = "Are you sure to continue?(y/N) "
       answer = raw_input(prompt).strip()
       if answer != "y":
@@ -944,7 +948,6 @@ class VersionControlSystem(object):
     raise NotImplementedError(
         "abstract method -- subclass %s must override" % self.__class__)
 
-
   def GetBaseFiles(self, diff):
     """Helper that calls GetBase file for each file in the patch.
 
@@ -962,7 +965,6 @@ class VersionControlSystem(object):
         filename = filename.strip().replace('\\', '/')
         files[filename] = self.GetBaseFile(filename)
     return files
-
 
   def UploadBaseFiles(self, issue, rpc_server, patch_list, patchset, options,
                       files):
@@ -998,7 +1000,7 @@ class VersionControlSystem(object):
                                             [("data", filename, content)])
       try:
         response_body = rpc_server.Send(url, body, content_type=ctype)
-      except urllib2.HTTPError, e:
+      except urllib2.HTTPError as e:
         response_body = ("Failed to upload file for %s. Got %d status code." %
             (filename, e.code))
 
@@ -1031,8 +1033,7 @@ class VersionControlSystem(object):
         threads.append(t)
 
     for t in threads:
-      print t.get(timeout=60)
-
+      print(t.get(timeout=60))
 
   def IsImage(self, filename):
     """Returns true if the filename has an image extension."""
@@ -1047,6 +1048,10 @@ class VersionControlSystem(object):
     # Derived from how Mercurial's heuristic, see
     # http://selenic.com/hg/file/848a6658069e/mercurial/util.py#l229
     return bool(data and "\0" in data)
+
+  def GetMostRecentCommitSummary(self):
+    """Returns a one line summary of the current commit."""
+    return ""
 
 
 class SubversionVCS(VersionControlSystem):
@@ -1511,6 +1516,9 @@ class GitVCS(VersionControlSystem):
         new_content = None
     return (base_content, new_content, is_binary, status)
 
+  def GetMostRecentCommitSummary(self):
+    return RunShell(["git", "log", "-1", "--format=%s"], silent_ok=True).strip()
+
 
 class CVSVCS(VersionControlSystem):
   """Implementation of the VersionControlSystem interface for CVS."""
@@ -1699,7 +1707,7 @@ class PerforceVCS(VersionControlSystem):
           ErrorExit("Error checking perforce login")
         if not retcode and (not "code" in data or data["code"] != "error"):
           break
-        print "Enter perforce password: "
+        print("Enter perforce password: ")
         self.RunPerforceCommandWithReturnCode(["login"])
 
     super(PerforceVCS, self).__init__(options)
@@ -2062,7 +2070,7 @@ def UploadSeparatePatches(issue, rpc_server, patchset, data, options):
 
     try:
       response_body = rpc_server.Send(url, body, content_type=ctype)
-    except urllib2.HTTPError, e:
+    except urllib2.HTTPError as e:
       response_body = ("Failed to upload patch for %s. Got %d status code." %
           (filename, e.code))
 
@@ -2079,8 +2087,8 @@ def UploadSeparatePatches(issue, rpc_server, patchset, data, options):
   rv = []
   for patch in patches:
     if len(patch[1]) > MAX_UPLOAD_SIZE:
-      print ("Not uploading the patch for " + patch[0] +
-             " because the file is too large.")
+      print("Not uploading the patch for %s because the file is too large." %
+            (patch[0],))
       continue
 
     filename = patch[0]
@@ -2091,7 +2099,7 @@ def UploadSeparatePatches(issue, rpc_server, patchset, data, options):
 
   for t in threads:
     result = t.get(timeout=60)
-    print result[0]
+    print(result[0])
     rv.append(result[1])
 
   return rv
@@ -2126,8 +2134,8 @@ def GuessVCSName(options):
       out, returncode = RunShellWithReturnCode(command)
       if returncode == 0:
         return (vcs_type, out.strip())
-    except OSError, (errcode, message):
-      if errcode != errno.ENOENT:  # command not found code
+    except OSError as e:
+      if e.errno != errno.ENOENT:  # command not found code
         raise
 
   # Mercurial has a command to get the base directory of a repository
@@ -2234,7 +2242,7 @@ def LoadSubversionAutoProperties():
     subversion_config = os.path.expanduser("~/.subversion/config")
   if not os.path.exists(subversion_config):
     return {}
-  config = ConfigParser.ConfigParser()
+  config = configparser.ConfigParser()
   config.read(subversion_config)
   if (config.has_section("miscellany") and
       config.has_option("miscellany", "enable-auto-props") and
@@ -2361,19 +2369,7 @@ def RealMain(argv, data=None):
 
   vcs = GuessVCS(options)
 
-  base = options.base_url
-  if isinstance(vcs, SubversionVCS):
-    # Guessing the base field is only supported for Subversion.
-    # Note: Fetching base files may become deprecated in future releases.
-    guessed_base = vcs.GuessBase(options.download_base)
-    if base:
-      if guessed_base and base != guessed_base:
-        print "Using base URL \"%s\" from --base_url instead of \"%s\"" % \
-            (base, guessed_base)
-    else:
-      base = guessed_base
-
-  if not base and options.download_base:
+  if options.download_base:
     options.download_base = True
     LOGGER.info("Enabled upload of base file")
   if not options.assume_yes:
@@ -2382,12 +2378,12 @@ def RealMain(argv, data=None):
     data = vcs.GenerateDiff(args)
   data = vcs.PostProcessDiff(data)
   if options.print_diffs:
-    print "Rietveld diff start:*****"
-    print data
-    print "Rietveld diff end:*****"
+    print("Rietveld diff start:*****")
+    print(data)
+    print("Rietveld diff end:*****")
   files = vcs.GetBaseFiles(data)
   if verbosity >= 1:
-    print "Upload server:", options.server, "(change with -s/--server)"
+    print("Upload server:", options.server, "(change with -s/--server)")
 
   auth_config = auth.extract_auth_config_from_options(options)
   rpc_server = GetRpcServer(options.server, auth_config, options.email)
@@ -2396,14 +2392,6 @@ def RealMain(argv, data=None):
   repo_guid = vcs.GetGUID()
   if repo_guid:
     form_fields.append(("repo_guid", repo_guid))
-  if base:
-    b = urlparse.urlparse(base)
-    username, netloc = urllib.splituser(b.netloc)
-    if username:
-      LOGGER.info("Removed username from base URL")
-      base = urlparse.urlunparse((b.scheme, netloc, b.path, b.params,
-                                  b.query, b.fragment))
-    form_fields.append(("base", base))
   if options.issue:
     form_fields.append(("issue", str(options.issue)))
   if options.email:
@@ -2428,6 +2416,7 @@ def RealMain(argv, data=None):
 
   # Process --message, --title and --file.
   message = options.message or ""
+  explicit_title = options.title is not None
   title = options.title or ""
   if options.file:
     if options.message:
@@ -2435,12 +2424,16 @@ def RealMain(argv, data=None):
     file = open(options.file, 'r')
     message = file.read()
     file.close()
-  if options.issue:
-    prompt = "Title describing this patch set: "
-  else:
-    prompt = "New issue subject: "
-  title = (
-      title or message.split('\n', 1)[0].strip() or raw_input(prompt).strip())
+  title = title or message.split('\n', 1)[0].strip()
+  if not title and not explicit_title:
+    if options.issue:
+      prompt = "Title describing this patch set"
+    else:
+      prompt = "New issue subject"
+    title_default = vcs.GetMostRecentCommitSummary()
+    if title_default:
+      prompt += " [%s]" % title_default
+    title = raw_input(prompt + ": ").strip() or title_default
   if not title and not options.issue:
     ErrorExit("A non-empty title is required for a new issue")
   # For existing issues, it's fine to give a patchset an empty name. Rietveld
@@ -2469,7 +2462,7 @@ def RealMain(argv, data=None):
   form_fields.append(("base_hashes", base_hashes))
   if options.private:
     if options.issue:
-      print "Warning: Private flag ignored when updating an existing issue."
+      print("Warning: Private flag ignored when updating an existing issue.")
     else:
       form_fields.append(("private", "1"))
   if options.send_patch:
@@ -2477,7 +2470,7 @@ def RealMain(argv, data=None):
   if not options.download_base:
     form_fields.append(("content_upload", "1"))
   if len(data) > MAX_UPLOAD_SIZE:
-    print "Patch is large, so uploading file patches separately."
+    print("Patch is large, so uploading file patches separately.")
     uploaded_diff_file = []
     form_fields.append(("separate_patches", "1"))
   else:
@@ -2536,7 +2529,7 @@ def main():
     StatusUpdate("Interrupted.")
     sys.exit(1)
   except auth.AuthenticationError as e:
-    print >> sys.stderr, e
+    print(e, file=sys.stderr)
     sys.exit(1)
 
 

@@ -22,6 +22,10 @@ class Error(Exception):
   pass
 
 
+class AlreadyRolledError(Error):
+  pass
+
+
 def check_output(*args, **kwargs):
   """subprocess.check_output() passing shell=True on Windows for git."""
   kwargs.setdefault('shell', NEED_SHELL)
@@ -59,7 +63,6 @@ def should_show_log(upstream_url):
   # Skip logs for very active projects.
   if upstream_url.endswith((
       '/angle/angle.git',
-      '/catapult-project/catapult.git',
       '/v8/v8.git')):
     return False
   if 'webrtc' in upstream_url:
@@ -109,7 +112,7 @@ def roll(root, deps_dir, roll_to, key, reviewers, bug, no_log, log_limit,
   print('Found new revision %s' % roll_to)
 
   if roll_to == head:
-    raise Error('No revision to roll!')
+    raise AlreadyRolledError('No revision to roll!')
 
   commit_range = '%s..%s' % (head[:9], roll_to[:9])
 
@@ -213,7 +216,7 @@ def main():
 
   except Error as e:
     sys.stderr.write('error: %s\n' % e)
-    return 1
+    return 2 if isinstance(e, AlreadyRolledError) else 1
 
   return 0
 

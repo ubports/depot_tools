@@ -38,11 +38,11 @@ releases.
     1. Upload those to the gs://chrome-infra Google Storage bucket.
     1. Set the `allUsers Reader` permission (click the "Public link" checkbox
        next to the binaries).
-  1. Edit the `set GIT_VERSION=X.Y.Z` line in `win_tools.bat` to be the new
-     version.
-    1. At the time of writing, the first version is the default version, and
-       the second is the 'bleeding edge' version. You can use the bleeding edge
-       version to get early feedback/stage a rollout/etc.
+  1. Edit the `git_version.txt` or `git_version_bleeding_edge.txt` file to
+     be the new version.
+    1. You can use the bleeding edge version to get early feedback/stage a
+       rollout/etc. Users can select this version by 'touch'ing the
+       `.git_bleeding_edge` file in the root depot_tools directory.
   1. Commit the CL.
 
 Note that in order for the update to take effect, `gclient` currently needs to
@@ -53,14 +53,7 @@ than the rest of this README.
 
 ### Python
 
-Python installs are sourced from https://src.chromium.org/viewvc/chrome/trunk/tools/ .
+Python installs are sourced from gs://chrome-infra/python276_bin.zip .
 
 The process to create them is sort-of-documented in the README of the python
 zip file.
-
-### Subversion
-
-Subversion installs are sourced from https://src.chromium.org/viewvc/chrome/trunk/tools/ .
-
-There will likely never be an update to SVN in `depot_tools` from the current
-version.

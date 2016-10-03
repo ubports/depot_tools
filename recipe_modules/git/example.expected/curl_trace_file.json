@@ -22,7 +22,8 @@
     ],
     "cwd": "[SLAVE_BUILD]/src",
     "env": {
-      "GIT_CURL_VERBOSE": "1"
+      "GIT_CURL_VERBOSE": "1",
+      "PATH": "RECIPE_PACKAGE_REPO[depot_tools]:%(PATH)s"
     },
     "name": "git fetch",
     "stderr": "[SLAVE_BUILD]/curl_trace.log"
@@ -152,6 +153,32 @@
     ],
     "cwd": "[SLAVE_BUILD]/src",
     "name": "git status cannot_fail_build"
+  },
+  {
+    "cmd": [
+      "git",
+      "new-branch",
+      "refactor"
+    ],
+    "cwd": "[SLAVE_BUILD]/src",
+    "env": {
+      "PATH": "RECIPE_PACKAGE_REPO[depot_tools]:%(PATH)s"
+    },
+    "name": "git new-branch refactor"
+  },
+  {
+    "cmd": [
+      "git",
+      "new-branch",
+      "feature",
+      "--upstream",
+      "refactor"
+    ],
+    "cwd": "[SLAVE_BUILD]/src",
+    "env": {
+      "PATH": "RECIPE_PACKAGE_REPO[depot_tools]:%(PATH)s"
+    },
+    "name": "git new-branch feature"
   },
   {
     "cmd": [

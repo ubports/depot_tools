@@ -13,15 +13,17 @@ TEST_CONFIGS = [
   'android',
   'android_bare',
   'blink',
-  'blink_or_chromium',
   'boringssl',
   'build_internal',
   'build_internal_scripts_slave',
   'catapult',
+  'chromedriver',
   'chrome_internal',
   'chromium',
   'chromium_lkcr',
   'chromium_lkgr',
+  'chromium_perf',
+  'chromium_perf_android',
   'chromium_skia',
   'chromium_webrtc',
   'chromium_webrtc_tot',
@@ -43,6 +45,7 @@ TEST_CONFIGS = [
   'pdfium',
   'perf',
   'recipes_py',
+  'recipes_py_bare',
   'show_v8_revision',
   'slave_deps',
   'v8_bleeding_edge_git',
@@ -58,7 +61,7 @@ def RunSteps(api):
   for config_name in TEST_CONFIGS:
     api.gclient.make_config(config_name)
 
-  src_cfg = api.gclient.make_config(GIT_MODE=True, CACHE_DIR='[ROOT]/git_cache')
+  src_cfg = api.gclient.make_config(CACHE_DIR='[ROOT]/git_cache')
   soln = src_cfg.solutions.add()
   soln.name = 'src'
   soln.url = 'https://chromium.googlesource.com/chromium/src.git'
@@ -67,15 +70,12 @@ def RunSteps(api):
   api.gclient.c = src_cfg
   api.gclient.checkout()
 
-  api.gclient.spec_alias = 'WebKit'
+  api.gclient.spec_alias = 'Angle'
   bl_cfg = api.gclient.make_config()
   soln = bl_cfg.solutions.add()
-  soln.name = 'WebKit'
-  soln.url = 'svn://svn.chromium.org/blink/trunk'
-  bl_cfg.revisions['third_party/WebKit'] = '123'
-
-  # Use safesync url for lkgr.
-  soln.safesync_url = 'https://blink-status.appspot.com/lkgr'
+  soln.name = 'Angle'
+  soln.url = 'https://chromium.googlesource.com/angle/angle.git'
+  bl_cfg.revisions['src/third_party/angle'] = 'refs/heads/lkgr'
 
   bl_cfg.got_revision_mapping['src/blatley'] = 'got_blatley_revision'
   api.gclient.checkout(

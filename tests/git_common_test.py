@@ -175,7 +175,7 @@ class GitReadOnlyFunctionsTest(git_test_utils.GitRepoReadOnlyTestBase,
 
   COMMIT_C = {
     'some/files/file2': {
-      'mode': 0755,
+      'mode': 0o755,
       'data': 'file2 - vanilla\n'},
   }
 
@@ -333,7 +333,6 @@ class GitReadOnlyFunctionsTest(git_test_utils.GitRepoReadOnlyTestBase,
 
   def testRepoRoot(self):
     def cd_and_repo_root(path):
-      print(os.getcwd())
       os.chdir(path)
       return self.gc.repo_root()
 
@@ -415,26 +414,29 @@ class GitMutableFunctionsTest(git_test_utils.GitRepoReadWriteTestBase,
 
   def testConfig(self):
     self.repo.git('config', '--add', 'happy.derpies', 'food')
-    self.assertEquals(self.repo.run(self.gc.config_list, 'happy.derpies'),
+    self.assertEquals(self.repo.run(self.gc.get_config_list, 'happy.derpies'),
                       ['food'])
-    self.assertEquals(self.repo.run(self.gc.config_list, 'sad.derpies'), [])
+    self.assertEquals(self.repo.run(self.gc.get_config_list, 'sad.derpies'), [])
 
     self.repo.git('config', '--add', 'happy.derpies', 'cat')
-    self.assertEquals(self.repo.run(self.gc.config_list, 'happy.derpies'),
+    self.assertEquals(self.repo.run(self.gc.get_config_list, 'happy.derpies'),
                       ['food', 'cat'])
 
-    self.assertEquals('cat', self.repo.run(self.gc.config, 'dude.bob', 'cat'))
+    self.assertEquals('cat', self.repo.run(self.gc.get_config, 'dude.bob',
+                                           'cat'))
 
     self.repo.run(self.gc.set_config, 'dude.bob', 'dog')
 
-    self.assertEquals('dog', self.repo.run(self.gc.config, 'dude.bob', 'cat'))
+    self.assertEquals('dog', self.repo.run(self.gc.get_config, 'dude.bob',
+                                           'cat'))
 
     self.repo.run(self.gc.del_config, 'dude.bob')
 
     # This should work without raising an exception
     self.repo.run(self.gc.del_config, 'dude.bob')
 
-    self.assertEquals('cat', self.repo.run(self.gc.config, 'dude.bob', 'cat'))
+    self.assertEquals('cat', self.repo.run(self.gc.get_config, 'dude.bob',
+                                           'cat'))
 
     self.assertEquals('origin/master', self.repo.run(self.gc.root))
 
@@ -559,10 +561,11 @@ class GitMutableStructuredTest(git_test_utils.GitRepoReadWriteTestBase,
     )
 
     self.assertEqual(
-      self.repo['B'], self.repo.run(self.gc.config, 'branch.branch_K.base')
+      self.repo['B'], self.repo.run(self.gc.get_config, 'branch.branch_K.base')
     )
     self.assertEqual(
-      'branch_G', self.repo.run(self.gc.config, 'branch.branch_K.base-upstream')
+      'branch_G', self.repo.run(self.gc.get_config,
+                                'branch.branch_K.base-upstream')
     )
 
     # deadbeef is a bad hash, so this will result in repo['B']
@@ -588,8 +591,8 @@ class GitMutableStructuredTest(git_test_utils.GitRepoReadWriteTestBase,
     self.repo.run(self.gc.remove_merge_base, 'branch_K')
     self.repo.run(self.gc.remove_merge_base, 'branch_L')
 
-    self.assertEqual(None,
-                     self.repo.run(self.gc.config, 'branch.branch_K.base'))
+    self.assertEqual(None, self.repo.run(self.gc.get_config,
+                                         'branch.branch_K.base'))
 
     self.assertEqual({}, self.repo.run(self.gc.branch_config_map, 'base'))
 
@@ -645,10 +648,18 @@ class GitMutableStructuredTest(git_test_utils.GitRepoReadWriteTestBase,
     ])
 
   def testIsGitTreeDirty(self):
-    self.assertEquals(False, self.repo.run(self.gc.is_dirty_git_tree, 'foo'))
+    retval = []
+    self.repo.capture_stdio(
+      lambda: retval.append(self.repo.run(self.gc.is_dirty_git_tree, 'foo')))
+
+    self.assertEquals(False, retval[0])
     self.repo.open('test.file', 'w').write('test data')
     self.repo.git('add', 'test.file')
-    self.assertEquals(True, self.repo.run(self.gc.is_dirty_git_tree, 'foo'))
+
+    retval = []
+    self.repo.capture_stdio(
+      lambda: retval.append(self.repo.run(self.gc.is_dirty_git_tree, 'foo')))
+    self.assertEquals(True, retval[0])
 
   def testSquashBranch(self):
     self.repo.git('checkout', 'branch_K')
@@ -727,6 +738,23 @@ class GitMutableStructuredTest(git_test_utils.GitRepoReadWriteTestBase,
     CAT DOG
     """)
 
+  def testStatus(self):
+    def inner():
+      dictified_status = lambda: {
+          k: dict(v._asdict())  # pylint: disable=W0212
+          for k, v in self.repo.run(self.gc.status)
+      }
+      self.repo.git('mv', 'file', 'cat')
+      with open('COOL', 'w') as f:
+        f.write('Super cool file!')
+      self.assertDictEqual(
+          dictified_status(),
+          {'cat':  {'lstat': 'R', 'rstat': ' ', 'src': 'file'},
+           'COOL': {'lstat': '?', 'rstat': '?', 'src': 'COOL'}}
+      )
+
+    self.repo.run(inner)
+
 
 class GitFreezeThaw(git_test_utils.GitRepoReadWriteTestBase):
   @classmethod
@@ -750,7 +778,7 @@ class GitFreezeThaw(git_test_utils.GitRepoReadWriteTestBase):
 
   COMMIT_C = {
     'some/files/file2': {
-      'mode': 0755,
+      'mode': 0o755,
       'data': 'file2 - vanilla'},
   }
 
@@ -805,6 +833,63 @@ class GitFreezeThaw(git_test_utils.GitRepoReadWriteTestBase):
 
     self.repo.run(inner)
 
+  def testTooBig(self):
+    def inner():
+      self.repo.git('config', 'depot-tools.freeze-size-limit', '1')
+      with open('bigfile', 'w') as f:
+        chunk = 'NERDFACE' * 1024
+        for _ in xrange(128 * 2 + 1):  # Just over 2 mb
+          f.write(chunk)
+      _, err = self.repo.capture_stdio(self.gc.freeze)
+      self.assertIn('too much untracked+unignored', err)
+
+    self.repo.run(inner)
+
+  def testTooBigMultipleFiles(self):
+    def inner():
+      self.repo.git('config', 'depot-tools.freeze-size-limit', '1')
+      for i in xrange(3):
+        with open('file%d' % i, 'w') as f:
+          chunk = 'NERDFACE' * 1024
+          for _ in xrange(50):  # About 400k
+            f.write(chunk)
+      _, err = self.repo.capture_stdio(self.gc.freeze)
+      self.assertIn('too much untracked+unignored', err)
+
+    self.repo.run(inner)
+
+  def testMerge(self):
+    def inner():
+      self.repo.git('checkout', '-b', 'bad_merge_branch')
+      with open('bad_merge', 'w') as f:
+        f.write('bad_merge_left')
+      self.repo.git('add', 'bad_merge')
+      self.repo.git('commit', '-m', 'bad_merge')
+
+      self.repo.git('checkout', 'branch_D')
+      with open('bad_merge', 'w') as f:
+        f.write('bad_merge_right')
+      self.repo.git('add', 'bad_merge')
+      self.repo.git('commit', '-m', 'bad_merge_d')
+
+      self.repo.git('merge', 'bad_merge_branch')
+
+      _, err = self.repo.capture_stdio(self.gc.freeze)
+      self.assertIn('Cannot freeze unmerged changes', err)
+
+    self.repo.run(inner)
+
+  def testAddError(self):
+    def inner():
+      self.repo.git('checkout', '-b', 'unreadable_file_branch')
+      with open('bad_file', 'w') as f:
+        f.write('some text')
+      os.chmod('bad_file', 0111)
+      ret = self.repo.run(self.gc.freeze)
+      self.assertIn('Failed to index some unindexed files.', ret)
+
+    self.repo.run(inner)
+
 
 class GitMakeWorkdir(git_test_utils.GitRepoReadOnlyTestBase, GitCommonTestBase):
   def setUp(self):
@@ -817,10 +902,8 @@ class GitMakeWorkdir(git_test_utils.GitRepoReadOnlyTestBase, GitCommonTestBase):
   A
   """
 
+  @unittest.skipIf(not hasattr(os, 'symlink'), "OS doesn't support symlink")
   def testMakeWorkdir(self):
-    if not hasattr(os, 'symlink'):
-      return
-
     workdir = os.path.join(self._tempdir, 'workdir')
     self.gc.make_workdir(os.path.join(self.repo.repo_path, '.git'),
                          os.path.join(workdir, '.git'))

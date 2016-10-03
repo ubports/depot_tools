@@ -32,8 +32,10 @@ import threading
 
 import subprocess2
 
-ROOT = os.path.abspath(os.path.dirname(__file__))
+from StringIO import StringIO
 
+
+ROOT = os.path.abspath(os.path.dirname(__file__))
 IS_WIN = sys.platform == 'win32'
 GIT_EXE = ROOT+'\\git.bat' if IS_WIN else 'git'
 TEST_MODE = False
@@ -90,6 +92,12 @@ GIT_TRANSIENT_ERRORS = (
     # crbug.com/430343
     # TODO(dnj): Resync with Chromite.
     r'The requested URL returned error: 5\d+',
+
+    r'Connection reset by peer',
+
+    r'Unable to look up',
+
+    r'Couldn\'t resolve host',
 )
 
 GIT_TRANSIENT_ERRORS_RE = re.compile('|'.join(GIT_TRANSIENT_ERRORS),
@@ -281,6 +289,10 @@ def once(function):
 
 ## Git functions
 
+def die(message, *args):
+  print >> sys.stderr, textwrap.dedent(message % args)
+  sys.exit(1)
+
 
 def blame(filename, revision=None, porcelain=False, *_args):
   command = ['blame']
@@ -293,23 +305,14 @@ def blame(filename, revision=None, porcelain=False, *_args):
 
 
 def branch_config(branch, option, default=None):
-  return config('branch.%s.%s' % (branch, option), default=default)
-
-
-def config_regexp(pattern):
-  if IS_WIN: # pragma: no cover
-    # this madness is because we call git.bat which calls git.exe which calls
-    # bash.exe (or something to that effect). Each layer divides the number of
-    # ^'s by 2.
-    pattern = pattern.replace('^', '^' * 8)
-  return run('config', '--get-regexp', pattern).splitlines()
+  return get_config('branch.%s.%s' % (branch, option), default=default)
 
 
 def branch_config_map(option):
   """Return {branch: <|option| value>} for all branches."""
   try:
     reg = re.compile(r'^branch\.(.*)\.%s$' % option)
-    lines = config_regexp(reg.pattern)
+    lines = get_config_regexp(reg.pattern)
     return {reg.match(k).group(1): v for k, v in (l.split() for l in lines)}
   except subprocess2.CalledProcessError:
     return {}
@@ -319,23 +322,22 @@ def branches(*args):
   NO_BRANCH = ('* (no branch', '* (detached', '* (HEAD detached')
 
   key = 'depot-tools.branch-limit'
-  limit = 20
-  try:
-    limit = int(config(key, limit))
-  except ValueError:
-    pass
+  limit = get_config_int(key, 20)
 
   raw_branches = run('branch', *args).splitlines()
 
   num = len(raw_branches)
-  if num > limit:
-    print >> sys.stderr, textwrap.dedent("""\
-    Your git repo has too many branches (%d/%d) for this tool to work well.
 
-    You may adjust this limit by running:
+  if num > limit:
+    die("""\
+      Your git repo has too many branches (%d/%d) for this tool to work well.
+
+      You may adjust this limit by running:
       git config %s <new_limit>
-    """ % (num, limit, key))
-    sys.exit(1)
+
+      You may also try cleaning up your old branches by running:
+      git cl archive
+      """, num, limit, key)
 
   for line in raw_branches:
     if line.startswith(NO_BRANCH):
@@ -343,18 +345,35 @@ def branches(*args):
     yield line.split()[-1]
 
 
-def config(option, default=None):
+def get_config(option, default=None):
   try:
     return run('config', '--get', option) or default
   except subprocess2.CalledProcessError:
     return default
 
 
-def config_list(option):
+def get_config_int(option, default=0):
+  assert isinstance(default, int)
+  try:
+    return int(get_config(option, default))
+  except ValueError:
+    return default
+
+
+def get_config_list(option):
   try:
     return run('config', '--get-all', option).split()
   except subprocess2.CalledProcessError:
     return []
+
+
+def get_config_regexp(pattern):
+  if IS_WIN: # pragma: no cover
+    # this madness is because we call git.bat which calls git.exe which calls
+    # bash.exe (or something to that effect). Each layer divides the number of
+    # ^'s by 2.
+    pattern = pattern.replace('^', '^' * 8)
+  return run('config', '--get-regexp', pattern).splitlines()
 
 
 def current_branch():
@@ -381,6 +400,38 @@ def diff(oldrev, newrev, *args):
 
 def freeze():
   took_action = False
+  key = 'depot-tools.freeze-size-limit'
+  MB = 2**20
+  limit_mb = get_config_int(key, 100)
+  untracked_bytes = 0
+
+  root_path = repo_root()
+
+  for f, s in status():
+    if is_unmerged(s):
+      die("Cannot freeze unmerged changes!")
+    if limit_mb > 0:
+      if s.lstat == '?':
+        untracked_bytes += os.stat(os.path.join(root_path, f)).st_size
+      if untracked_bytes > limit_mb * MB:
+        die("""\
+          You appear to have too much untracked+unignored data in your git
+          checkout: %.1f / %d MB.
+
+          Run `git status` to see what it is.
+
+          In addition to making many git commands slower, this will prevent
+          depot_tools from freezing your in-progress changes.
+
+          You should add untracked data that you want to ignore to your repo's
+            .git/info/excludes
+          file. See `git help ignore` for the format of this file.
+
+          If this data is indended as part of your commit, you may adjust the
+          freeze limit by running:
+            git config %s <new_limit>
+          Where <new_limit> is an integer threshold in megabytes.""",
+          untracked_bytes / (MB * 1.0), limit_mb, key)
 
   try:
     run('commit', '--no-verify', '-m', FREEZE + '.indexed')
@@ -388,15 +439,24 @@ def freeze():
   except subprocess2.CalledProcessError:
     pass
 
+  add_errors = False
   try:
-    run('add', '-A')
+    run('add', '-A', '--ignore-errors')
+  except subprocess2.CalledProcessError:
+    add_errors = True
+
+  try:
     run('commit', '--no-verify', '-m', FREEZE + '.unindexed')
     took_action = True
   except subprocess2.CalledProcessError:
     pass
 
+  ret = []
+  if add_errors:
+    ret.append('Failed to index some unindexed files.')
   if not took_action:
-    return 'Nothing to freeze.'
+    ret.append('Nothing to freeze.')
+  return ' '.join(ret) or None
 
 
 def get_branch_tree():
@@ -491,6 +551,13 @@ def is_dormant(branch):
   return branch_config(branch, 'dormant', 'false') != 'false'
 
 
+def is_unmerged(stat_value):
+  return (
+      'U' in (stat_value.lstat, stat_value.rstat) or
+      ((stat_value.lstat == stat_value.rstat) and stat_value.lstat in 'AD')
+  )
+
+
 def manual_merge_base(branch, base, parent):
   set_branch_config(branch, 'base', base)
   set_branch_config(branch, 'base-upstream', parent)
@@ -567,7 +634,7 @@ def repo_root():
 
 
 def root():
-  return config('depot-tools.upstream', 'origin/master')
+  return get_config('depot-tools.upstream', 'origin/master')
 
 
 @contextlib.contextmanager
@@ -689,15 +756,57 @@ def get_dirty_files():
 
 
 def is_dirty_git_tree(cmd):
+  w = lambda s: sys.stderr.write(s+"\n")
+
   dirty = get_dirty_files()
   if dirty:
-    print 'Cannot %s with a dirty tree. You must commit locally first.' % cmd
-    print 'Uncommitted files: (git diff-index --name-status HEAD)'
-    print dirty[:4096]
+    w('Cannot %s with a dirty tree. Commit, freeze or stash your changes first.'
+      % cmd)
+    w('Uncommitted files: (git diff-index --name-status HEAD)')
+    w(dirty[:4096])
     if len(dirty) > 4096: # pragma: no cover
-      print '... (run "git diff-index --name-status HEAD" to see full output).'
+      w('... (run "git diff-index --name-status HEAD" to see full output).')
     return True
   return False
+
+
+def status():
+  """Returns a parsed version of git-status.
+
+  Returns a generator of (current_name, (lstat, rstat, src)) pairs where:
+    * current_name is the name of the file
+    * lstat is the left status code letter from git-status
+    * rstat is the left status code letter from git-status
+    * src is the current name of the file, or the original name of the file
+      if lstat == 'R'
+  """
+  stat_entry = collections.namedtuple('stat_entry', 'lstat rstat src')
+
+  def tokenizer(stream):
+    acc = StringIO()
+    c = None
+    while c != '':
+      c = stream.read(1)
+      if c in (None, '', '\0'):
+        if acc.len:
+          yield acc.getvalue()
+          acc = StringIO()
+      else:
+        acc.write(c)
+
+  def parser(tokens):
+    while True:
+      # Raises StopIteration if it runs out of tokens.
+      status_dest = next(tokens)
+      stat, dest = status_dest[:2], status_dest[3:]
+      lstat, rstat = stat
+      if lstat == 'R':
+        src = next(tokens)
+      else:
+        src = dest
+      yield (dest, stat_entry(lstat, rstat, src))
+
+  return parser(tokenizer(run_stream('status', '-z', bufsize=-1)))
 
 
 def squash_current_branch(header=None, merge_base=None):
@@ -791,7 +900,7 @@ def tree(treeref, recurse=False):
 
   Args:
     treeref (str) - a git ref which resolves to a tree (commits count as trees).
-    recurse (bool) - include all of the tree's decendants too. File names will
+    recurse (bool) - include all of the tree's descendants too. File names will
       take the form of 'some/path/to/file'.
 
   Return format:

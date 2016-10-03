@@ -10,17 +10,16 @@ from recipe_engine.config import ConfigList, Dict, Single, Static, Set, List
 from . import api as gclient_api
 
 
-def BaseConfig(USE_MIRROR=True, GIT_MODE=False, CACHE_DIR=None,
+def BaseConfig(USE_MIRROR=True, CACHE_DIR=None,
                PATCH_PROJECT=None, BUILDSPEC_VERSION=None,
                **_kwargs):
-  deps = '.DEPS.git' if GIT_MODE else 'DEPS'
   cache_dir = str(CACHE_DIR) if CACHE_DIR else None
   return ConfigGroup(
     solutions = ConfigList(
       lambda: ConfigGroup(
         name = Single(basestring),
         url = Single(basestring),
-        deps_file = Single(basestring, empty_val=deps, required=False,
+        deps_file = Single(basestring, empty_val='.DEPS.git', required=False,
                            hidden=False),
         managed = Single(bool, empty_val=True, required=False, hidden=False),
         custom_deps = Dict(value_type=(basestring, types.NoneType)),
@@ -86,7 +85,6 @@ def BaseConfig(USE_MIRROR=True, GIT_MODE=False, CACHE_DIR=None,
         required=False,
         hidden=True),
 
-    GIT_MODE = Static(bool(GIT_MODE)),
     USE_MIRROR = Static(bool(USE_MIRROR)),
     # TODO(tandrii): remove PATCH_PROJECT field.
     # DON'T USE THIS. WILL BE REMOVED.
@@ -96,43 +94,18 @@ def BaseConfig(USE_MIRROR=True, GIT_MODE=False, CACHE_DIR=None,
 
 config_ctx = config_item_context(BaseConfig)
 
-def ChromiumSvnSubURL(c, *pieces):
-  BASES = ('https://src.chromium.org',
-           'svn://svn-mirror.golo.chromium.org')
-  return '/'.join((BASES[c.USE_MIRROR],) + pieces)
-
 def ChromiumGitURL(_c, *pieces):
   return '/'.join(('https://chromium.googlesource.com',) + pieces)
 
 def ChromiumSrcURL(c):
-  # TODO(phajdan.jr): Move to proper repo and add coverage.
-  if c.GIT_MODE:  # pragma: no cover
-    return ChromiumGitURL(c, 'chromium', 'src.git')
-  else:
-    return ChromiumSvnSubURL(c, 'chrome', 'trunk', 'src')
-
-def BlinkURL(c):
-  # TODO(phajdan.jr): Move to proper repo and add coverage.
-  if c.GIT_MODE:  # pragma: no cover
-    return ChromiumGitURL(c, 'chromium', 'blink.git')
-  else:
-    return ChromiumSvnSubURL(c, 'blink', 'trunk')
-
-def ChromeSvnSubURL(c, *pieces):
-  BASES = ('svn://svn.chromium.org',
-           'svn://svn-mirror.golo.chromium.org')
-  return '/'.join((BASES[c.USE_MIRROR],) + pieces)
+  return ChromiumGitURL(c, 'chromium', 'src.git')
 
 # TODO(phajdan.jr): Move to proper repo and add coverage.
 def ChromeInternalGitURL(_c, *pieces):  # pragma: no cover
   return '/'.join(('https://chrome-internal.googlesource.com',) + pieces)
 
 def ChromeInternalSrcURL(c):
-  # TODO(phajdan.jr): Move to proper repo and add coverage.
-  if c.GIT_MODE:  # pragma: no cover
-    return ChromeInternalGitURL(c, 'chrome', 'src-internal.git')
-  else:
-    return ChromeSvnSubURL(c, 'chrome-internal', 'trunk', 'src-internal')
+  return ChromeInternalGitURL(c, 'chrome', 'src-internal.git')
 
 def mirror_only(c, obj, default=None):
   return obj if c.USE_MIRROR else (default or obj.__class__())
@@ -142,11 +115,7 @@ def chromium_bare(c):
   s = c.solutions.add()
   s.name = 'src'
   s.url = ChromiumSrcURL(c)
-  s.custom_vars = mirror_only(c, {
-    'googlecode_url': 'svn://svn-mirror.golo.chromium.org/%s',
-    'nacl_trunk': 'svn://svn-mirror.golo.chromium.org/native_client/trunk',
-    'sourceforge_url': 'svn://svn-mirror.golo.chromium.org/%(repo)s',
-    'webkit_trunk': BlinkURL(c)})
+  s.custom_vars = {}
   m = c.got_revision_mapping
   m['src'] = 'got_revision'
   m['src/native_client'] = 'got_nacl_revision'
@@ -165,13 +134,16 @@ def chromium_bare(c):
   p['parent_got_webrtc_revision'] = 'webrtc_revision'
 
   p = c.patch_projects
-  p['v8'] = ('src/v8', 'HEAD')
-  p['buildtools'] = ('src/buildtools', 'HEAD')
   p['angle/angle'] = ('src/third_party/angle', None)
   p['blink'] = ('src/third_party/WebKit', None)
+  p['buildtools'] = ('src/buildtools', 'HEAD')
+  p['catapult'] = ('src/third_party/catapult', 'HEAD')
+  p['flac'] = ('src/third_party/flac', 'HEAD')
+  p['icu'] = ('src/third_party/icu', 'HEAD')
   p['pdfium'] = ('src/third_party/pdfium', 'HEAD')
   p['skia'] = ('src/third_party/skia', 'HEAD')
-  p['flac'] = ('src/third_party/flac', 'HEAD')
+  p['v8'] = ('src/v8', 'HEAD')
+  p['webrtc'] = ('src/third_party/webrtc', 'HEAD')
 
 @config_ctx(includes=['chromium_bare'])
 def chromium_empty(c):
@@ -184,24 +156,12 @@ def chromium(c):
 
 @config_ctx(includes=['chromium'])
 def chromium_lkcr(c):
-  # TODO(phajdan.jr): Add git hashes for LKCR crbug.com/349277.
-  if c.GIT_MODE:
-    raise BadConf('Git has problems with safesync_url and LKCR, '
-                  'crbug.com/349277 crbug.com/109191')  # pragma: no cover
   s = c.solutions[0]
-  s.safesync_url = 'https://build.chromium.org/p/chromium/lkcr-status/lkgr'
-  # TODO(hinoka): Once lkcr exists and is a tag, it should just be lkcr
-  #               rather than origin/lkcr.
   s.revision = 'origin/lkcr'
 
 @config_ctx(includes=['chromium'])
 def chromium_lkgr(c):
   s = c.solutions[0]
-  safesync_url = 'https://chromium-status.appspot.com/lkgr'
-  if c.GIT_MODE:  # pragma: no cover
-    safesync_url = 'https://chromium-status.appspot.com/git-lkgr'
-    raise BadConf('Git has problems with safesync_url, crbug.com/109191.')
-  s.safesync_url = safesync_url
   s.revision = 'origin/lkgr'
 
 @config_ctx(includes=['chromium_bare'])
@@ -250,14 +210,6 @@ def blink(c):
   del c.solutions[0].custom_deps
   c.revisions['src/third_party/WebKit'] = 'HEAD'
 
-@config_ctx(includes=['chromium'])
-def blink_or_chromium(c):
-  c.solutions[0].revision = gclient_api.ProjectRevisionResolver('chromium')
-  del c.solutions[0].custom_deps
-  c.revisions['src/third_party/WebKit'] = \
-      gclient_api.ProjectRevisionResolver(
-          'webkit', parent_got_revision='parent_got_webkit_revision')
-
 # TODO(phajdan.jr): Move to proper repo and add coverage.
 @config_ctx(includes=['chromium'])
 def blink_merged(c):  # pragma: no cover
@@ -291,46 +243,6 @@ def v8_bleeding_edge_git(c):
 @config_ctx()
 def v8_canary(c):
   c.revisions['src/v8'] = 'origin/canary'
-
-@config_ctx(includes=['chromium'])
-def oilpan(c):  # pragma: no cover
-  if c.GIT_MODE:
-    raise BadConf("Oilpan requires SVN for now")
-  c.solutions[0].custom_vars = {
-    'webkit_trunk': ChromiumSvnSubURL(c, 'blink', 'branches', 'oilpan')
-  }
-  c.solutions[0].custom_vars['sourceforge_url'] = mirror_only(
-    c,
-    'svn://svn-mirror.golo.chromium.org/%(repo)s',
-    'svn://svn.chromium.org/%(repo)s'
-  )
-
-  c.revisions['src/third_party/WebKit'] = 'HEAD'
-  c.solutions[0].revision = '197341'
-
-  c.solutions[0].custom_deps = {
-    'src/chrome/tools/test/reference_build/chrome_linux' :
-      ChromiumSvnSubURL(c, 'blink', 'branches', 'oilpan', 'Tools',
-                        'reference_build', 'chrome_linux')
-  }
-  del c.got_revision_mapping['src']
-  c.got_revision_mapping['src/third_party/WebKit/Source'] = 'got_revision'
-
-@config_ctx(includes=['oilpan', 'chrome_internal'])
-def oilpan_internal(c):  # pragma: no cover
-  # Add back the oilpan data dependencies
-  needed_components_internal = [
-    "src/data/memory_test",
-    "src/data/mozilla_js_tests",
-    "src/data/page_cycler",
-    "src/data/tab_switching",
-    "src/webkit/data/bmp_decoder",
-    "src/webkit/data/ico_decoder",
-    "src/webkit/data/test_shell/plugins",
-    "src/webkit/data/xbm_decoder",
-  ]
-  for key in needed_components_internal:
-    del c.solutions[1].custom_deps[key]
 
 @config_ctx()
 def nacl(c):
@@ -366,49 +278,39 @@ def gyp(c):
   m = c.got_revision_mapping
   m['gyp'] = 'got_revision'
 
-@config_ctx(config_vars={'GIT_MODE': True})
-def build(c):  # pragma: no cover
-  if not c.GIT_MODE:
-    raise BadConf('build only supports git')
+@config_ctx()
+def build(c):
   s = c.solutions.add()
   s.name = 'build'
   s.url = ChromiumGitURL(c, 'chromium', 'tools', 'build.git')
   m = c.got_revision_mapping
   m['build'] = 'got_revision'
 
-@config_ctx(config_vars={'GIT_MODE': True})
+@config_ctx()
 def depot_tools(c):  # pragma: no cover
-  if not c.GIT_MODE:
-    raise BadConf('depot_tools only supports git')
   s = c.solutions.add()
   s.name = 'depot_tools'
   s.url = ChromiumGitURL(c, 'chromium', 'tools', 'depot_tools.git')
   m = c.got_revision_mapping
   m['depot_tools'] = 'got_revision'
 
-@config_ctx(config_vars={'GIT_MODE': True})
+@config_ctx()
 def skia(c):  # pragma: no cover
-  if not c.GIT_MODE:
-    raise BadConf('skia only supports git')
   s = c.solutions.add()
   s.name = 'skia'
   s.url = 'https://skia.googlesource.com/skia.git'
   m = c.got_revision_mapping
   m['skia'] = 'got_revision'
 
-@config_ctx(config_vars={'GIT_MODE': True})
-def chrome_golo(c): # pragma: no cover
-  if not c.GIT_MODE:
-    raise BadConf('chrome_golo only supports git')
+@config_ctx()
+def chrome_golo(c):  # pragma: no cover
   s = c.solutions.add()
   s.name = 'chrome_golo'
   s.url = 'https://chrome-internal.googlesource.com/chrome-golo/chrome-golo.git'
   c.got_revision_mapping['chrome_golo'] = 'got_revision'
 
-@config_ctx(config_vars={'GIT_MODE': True})
+@config_ctx()
 def build_internal(c):
-  if not c.GIT_MODE:  # pragma: no cover
-    raise BadConf('build_internal only supports git')
   s = c.solutions.add()
   s.name = 'build_internal'
   s.url = 'https://chrome-internal.googlesource.com/chrome/tools/build.git'
@@ -419,10 +321,8 @@ def build_internal(c):
   build(c)
   c.got_revision_mapping['build'] = 'got_build_revision'
 
-@config_ctx(config_vars={'GIT_MODE': True})
+@config_ctx()
 def build_internal_scripts_slave(c):
-  if not c.GIT_MODE:  # pragma: no cover
-    raise BadConf('build_internal_scripts_slave only supports git')
   s = c.solutions.add()
   s.name = 'build_internal/scripts/slave'
   s.url = ('https://chrome-internal.googlesource.com/'
@@ -461,7 +361,6 @@ def internal_deps(c):
 @config_ctx(includes=['chromium', 'chrome_internal'])
 def perf(c):
   s = c.solutions[0]
-  s.custom_vars['llvm_url'] = 'svn://svn-mirror.golo.chromium.org/llvm-project'
   s.managed = False
   needed_components_internal = [
     "src/data/page_cycler",
@@ -469,6 +368,14 @@ def perf(c):
   for key in needed_components_internal:
     del c.solutions[1].custom_deps[key]
   c.solutions[1].managed = False
+
+@config_ctx(includes=['chromium', 'chrome_internal'])
+def chromium_perf(c):
+  pass
+
+@config_ctx(includes=['chromium_perf', 'android'])
+def chromium_perf_android(c):
+  pass
 
 @config_ctx(includes=['chromium'])
 def chromium_skia(c):
@@ -482,8 +389,6 @@ def chromium_skia(c):
 
 @config_ctx(includes=['chromium'])
 def chromium_webrtc(c):
-  c.got_revision_mapping['src/third_party/libjingle/source/talk'] = (
-      'got_libjingle_revision')
   c.got_revision_mapping['src/third_party/libvpx/source'] = (
       'got_libvpx_revision')
 
@@ -497,7 +402,6 @@ def chromium_webrtc_tot(c):
   """
   c.revisions['src'] = 'HEAD'
   c.revisions['src/third_party/webrtc'] = 'HEAD'
-  c.revisions['src/third_party/libjingle/source/talk'] = 'HEAD'
 
 @config_ctx()
 def webrtc_test_resources(c):
@@ -545,7 +449,7 @@ def dart(c):
   soln.deps_file = 'DEPS'
   soln.managed = False
 
-@config_ctx(config_vars={'GIT_MODE': True})
+@config_ctx()
 def infra(c):
   soln = c.solutions.add()
   soln.name = 'infra'
@@ -554,9 +458,11 @@ def infra(c):
 
   p = c.patch_projects
   p['luci-py'] = ('infra/luci', 'HEAD')
+  # TODO(phajdan.jr): remove recipes-py when it's not used for project name.
   p['recipes-py'] = ('infra/recipes-py', 'HEAD')
+  p['recipe_engine'] = ('infra/recipes-py', 'HEAD')
 
-@config_ctx(config_vars={'GIT_MODE': True})
+@config_ctx()
 def infra_internal(c):  # pragma: no cover
   soln = c.solutions.add()
   soln.name = 'infra_internal'
@@ -608,15 +514,12 @@ def recipes_py(c):
   m['infra/recipes-py'] = 'got_revision'
 
 @config_ctx()
-def chrome_from_buildspec(c):  # pragma: no cover
+def recipes_py_bare(c):
   soln = c.solutions.add()
-  soln.name = 'chrome_from_buildspec'
-  # This URL has to be augmented with the appropriate bucket by the recipe using
-  # it.
-  soln.url = ('svn://svn-mirror.golo.chromium.org/chrome-internal/trunk/tools/'
-      'buildspec/build/')
-  soln.custom_vars['svn_url'] = 'svn://svn-mirror.golo.chromium.org'
-  soln.custom_deps = {}
+  soln.name = 'recipes-py'
+  soln.url = ('https://chromium.googlesource.com/external/github.com/'
+              'luci/recipes-py')
+  c.got_revision_mapping['recipes-py'] = 'got_revision'
 
 @config_ctx()
 def catapult(c):
@@ -626,7 +529,7 @@ def catapult(c):
               'catapult-project/catapult.git')
   c.got_revision_mapping['catapult'] = 'got_revision'
 
-@config_ctx(includes=['infra_internal'], config_vars={'GIT_MODE': True})
+@config_ctx(includes=['infra_internal'])
 def infradata_master_manager(c):
   soln = c.solutions.add()
   soln.name = 'infra-data-master-manager'
@@ -670,3 +573,10 @@ def valgrind(c):  # pragma: no cover
   """Add Valgrind binaries to the gclient solution."""
   c.solutions[0].custom_deps['src/third_party/valgrind'] = \
     ChromiumGitURL(c, 'chromium', 'deps', 'valgrind', 'binaries')
+
+@config_ctx(includes=['chromium'])
+def chromedriver(c):
+  """Add Selenium Java tests to the gclient solution."""
+  c.solutions[0].custom_deps[
+      'src/chrome/test/chromedriver/third_party/java_tests'] = (
+          ChromiumGitURL(c, 'chromium', 'deps', 'webdriver'))

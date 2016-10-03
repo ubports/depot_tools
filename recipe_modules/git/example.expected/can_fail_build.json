@@ -21,6 +21,9 @@
       "--recurse-submodules"
     ],
     "cwd": "[SLAVE_BUILD]/src",
+    "env": {
+      "PATH": "RECIPE_PACKAGE_REPO[depot_tools]:%(PATH)s"
+    },
     "name": "git fetch"
   },
   {
@@ -148,6 +151,7 @@
   {
     "name": "$result",
     "reason": "Infra Failure: Step('git status can_fail_build') returned 1",
+    "recipe_result": null,
     "status_code": 1
   }
 ]

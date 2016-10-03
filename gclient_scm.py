@@ -173,20 +173,25 @@ class SCMWrapper(object):
     # Get the second token of the first line of the log.
     return log.splitlines()[0].split(' ', 1)[1]
 
+  def GetCacheMirror(self):
+    if (getattr(self, 'cache_dir', None) and
+        getattr(self, 'cache_mode', 'full') == 'full'):
+      url, _ = gclient_utils.SplitUrlRevision(self.url)
+      return git_cache.Mirror(url)
+    return None
+
   def GetActualRemoteURL(self, options):
     """Attempt to determine the remote URL for this SCMWrapper."""
     # Git
     if os.path.exists(os.path.join(self.checkout_path, '.git')):
       actual_remote_url = self._get_first_remote_url(self.checkout_path)
 
-      # If a cache_dir is used, obtain the actual remote URL from the cache.
-      if (getattr(self, 'cache_dir', None) and
-          getattr(self, 'cache_mode', 'full') == 'full'):
-        url, _ = gclient_utils.SplitUrlRevision(self.url)
-        mirror = git_cache.Mirror(url)
-        if (mirror.exists() and mirror.mirror_path.replace('\\', '/') ==
-            actual_remote_url.replace('\\', '/')):
-          actual_remote_url = self._get_first_remote_url(mirror.mirror_path)
+      mirror = self.GetCacheMirror()
+      # If the cache is used, obtain the actual remote URL from there.
+      if (mirror and mirror.exists() and
+          mirror.mirror_path.replace('\\', '/') ==
+          actual_remote_url.replace('\\', '/')):
+        actual_remote_url = self._get_first_remote_url(mirror.mirror_path)
       return actual_remote_url
 
     # Svn
@@ -289,8 +294,11 @@ class GitWrapper(SCMWrapper):
     """
 
   def diff(self, options, _args, _file_list):
-    merge_base = self._Capture(['merge-base', 'HEAD', self.remote])
-    self._Run(['diff', merge_base], options)
+    try:
+      merge_base = [self._Capture(['merge-base', 'HEAD', self.remote])]
+    except subprocess2.CalledProcessError:
+      merge_base = []
+    self._Run(['diff'] + merge_base, options)
 
   def pack(self, _options, _args, _file_list):
     """Generates a patch file which can be applied to the root of the
@@ -299,9 +307,12 @@ class GitWrapper(SCMWrapper):
     The patch file is generated from a diff of the merge base of HEAD and
     its upstream branch.
     """
-    merge_base = self._Capture(['merge-base', 'HEAD', self.remote])
+    try:
+      merge_base = [self._Capture(['merge-base', 'HEAD', self.remote])]
+    except subprocess2.CalledProcessError:
+      merge_base = []
     gclient_utils.CheckCallAndFilter(
-        ['git', 'diff', merge_base],
+        ['git', 'diff'] + merge_base,
         cwd=self.checkout_path,
         filter_fn=GitDiffFilterer(self.relpath, print_func=self.Print).Filter)
 
@@ -555,9 +566,7 @@ class GitWrapper(SCMWrapper):
 
     if current_type == 'detached':
       # case 0
-      if not options.force:
-        # Don't do this check if nuclear option is on.
-        self._CheckClean(rev_str)
+      self._CheckClean(rev_str)
       self._CheckDetachedHead(rev_str, options)
       if self._Capture(['rev-list', '-n', '1', 'HEAD']) == revision:
         self.Print('Up-to-date; skipping checkout.')
@@ -567,7 +576,7 @@ class GitWrapper(SCMWrapper):
         self._Checkout(
             options,
             revision,
-            force=(options.force or options.delete_unversioned_trees),
+            force=(options.force and options.delete_unversioned_trees),
             quiet=True,
         )
       if not printed_path:
@@ -784,11 +793,14 @@ class GitWrapper(SCMWrapper):
       self.Print('________ couldn\'t run status in %s:\n'
                  'The directory does not exist.' % self.checkout_path)
     else:
-      merge_base = self._Capture(['merge-base', 'HEAD', self.remote])
-      self._Run(['diff', '--name-status', merge_base], options,
+      try:
+        merge_base = [self._Capture(['merge-base', 'HEAD', self.remote])]
+      except subprocess2.CalledProcessError:
+        merge_base = []
+      self._Run(['diff', '--name-status'] + merge_base, options,
                 stdout=self.out_fh)
       if file_list is not None:
-        files = self._Capture(['diff', '--name-only', merge_base]).split()
+        files = self._Capture(['diff', '--name-only'] + merge_base).split()
         file_list.extend([os.path.join(self.checkout_path, f) for f in files])
 
   def GetUsableRev(self, rev, options):
@@ -1194,6 +1206,7 @@ class GitWrapper(SCMWrapper):
     return self._Capture(checkout_args)
 
   def _Fetch(self, options, remote=None, prune=False, quiet=False):
+    kill_timeout = float(os.getenv('GCLIENT_KILL_GIT_FETCH_AFTER', 0))
     cfg = gclient_utils.DefaultIndexPackConfig(self.url)
     fetch_cmd =  cfg + [
         'fetch',
@@ -1206,7 +1219,8 @@ class GitWrapper(SCMWrapper):
       fetch_cmd.append('--verbose')
     elif quiet:
       fetch_cmd.append('--quiet')
-    self._Run(fetch_cmd, options, show_header=options.verbose, retry=True)
+    self._Run(fetch_cmd, options, show_header=options.verbose, retry=True,
+              kill_timeout=kill_timeout)
 
     # Return the revision that was fetched; this will be stored in 'FETCH_HEAD'
     return self._Capture(['rev-parse', '--verify', 'FETCH_HEAD'])
@@ -1228,7 +1242,7 @@ class GitWrapper(SCMWrapper):
       self._Run(config_cmd, options)
       need_fetch = True
     if fetch and need_fetch:
-      self._Fetch(options)
+      self._Fetch(options, prune=options.force)
 
   def _Run(self, args, options, show_header=True, **kwargs):
     # Disable 'unused options' warning | pylint: disable=W0613
@@ -1642,7 +1656,7 @@ class SVNWrapper(SCMWrapper):
       self._RunAndGetFileList(['update', '--revision', 'BASE'], options,
           file_list)
     except OSError, e:
-      # Maybe the directory disapeared meanwhile. Do not throw an exception.
+      # Maybe the directory disappeared meanwhile. Do not throw an exception.
       logging.error('Failed to update:\n%s' % str(e))
 
   def revinfo(self, _options, _args, _file_list):
