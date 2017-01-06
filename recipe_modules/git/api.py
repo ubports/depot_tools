@@ -186,7 +186,7 @@ class GitApi(recipe_api.RecipeApi):
       # ex: ssh://host:repo/foobar/.git
       dir_path = dir_path or dir_path.rsplit('/', 1)[-1]
 
-      dir_path = self.m.path['slave_build'].join(dir_path)
+      dir_path = self.m.path['start_dir'].join(dir_path)
 
     if 'checkout' not in self.m.path:
       self.m.path['checkout'] = dir_path
@@ -215,13 +215,15 @@ class GitApi(recipe_api.RecipeApi):
 
     if use_git_cache:
       with self.m.step.context({'env': {'PATH': path}}):
-        self('retry', 'cache', 'populate', '-c', self.m.path['git_cache'], url,
+        self('retry', 'cache', 'populate', '-c',
+             self.m.infra_paths.default_git_cache_dir, url,
+
              name='populate cache',
              can_fail_build=can_fail_build,
              cwd=dir_path)
         dir_cmd = self(
             'cache', 'exists', '--quiet',
-            '--cache-dir', self.m.path['git_cache'], url,
+            '--cache-dir', self.m.infra_paths.default_git_cache_dir, url,
             can_fail_build=can_fail_build,
             stdout=self.m.raw_io.output(),
             step_test_data=lambda:

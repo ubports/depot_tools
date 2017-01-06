@@ -37,14 +37,14 @@ class NoUsableRevError(gclient_utils.Error):
 class DiffFiltererWrapper(object):
   """Simple base class which tracks which file is being diffed and
   replaces instances of its file name in the original and
-  working copy lines of the svn/git diff output."""
+  working copy lines of the git diff output."""
   index_string = None
   original_prefix = "--- "
   working_prefix = "+++ "
 
   def __init__(self, relpath, print_func):
     # Note that we always use '/' as the path separator to be
-    # consistent with svn's cygwin-style output on Windows
+    # consistent with cygwin-style output on Windows
     self._relpath = relpath.replace("\\", "/")
     self._current_file = None
     self._print_func = print_func
@@ -70,10 +70,6 @@ class DiffFiltererWrapper(object):
     self._print_func(line)
 
 
-class SvnDiffFilterer(DiffFiltererWrapper):
-  index_string = "Index: "
-
-
 class GitDiffFilterer(DiffFiltererWrapper):
   index_string = "diff --git "
 
@@ -90,26 +86,20 @@ class GitDiffFilterer(DiffFiltererWrapper):
 # Factory Method for SCM wrapper creation
 
 def GetScmName(url):
-  if url:
-    url, _ = gclient_utils.SplitUrlRevision(url)
-    if (url.startswith('git://') or url.startswith('ssh://') or
-        url.startswith('git+http://') or url.startswith('git+https://') or
-        url.endswith('.git') or url.startswith('sso://') or
-        'googlesource' in url or 'git.launchpad.net' in url):
-      return 'git'
-    elif (url.startswith('http://') or url.startswith('https://') or
-          url.startswith('svn://') or url.startswith('svn+ssh://')):
-      return 'svn'
-    elif url.startswith('file://'):
-      if url.endswith('.git'):
-        return 'git'
-      return 'svn'
+  if not url:
+    return None
+  url, _ = gclient_utils.SplitUrlRevision(url)
+  if url.endswith('.git'):
+    return 'git'
+  protocol = url.split('://')[0]
+  if protocol in (
+      'file', 'git', 'git+http', 'git+https', 'http', 'https', 'ssh', 'sso'):
+    return 'git'
   return None
 
 
 def CreateSCM(url, root_dir=None, relpath=None, out_fh=None, out_cb=None):
   SCM_MAP = {
-    'svn' : SVNWrapper,
     'git' : GitWrapper,
   }
 
@@ -153,7 +143,7 @@ class SCMWrapper(object):
     print(*args, **kwargs)
 
   def RunCommand(self, command, options, args, file_list=None):
-    commands = ['cleanup', 'update', 'updatesingle', 'revert',
+    commands = ['update', 'updatesingle', 'revert',
                 'revinfo', 'status', 'diff', 'pack', 'runhooks']
 
     if not command in commands:
@@ -193,10 +183,6 @@ class SCMWrapper(object):
           actual_remote_url.replace('\\', '/')):
         actual_remote_url = self._get_first_remote_url(mirror.mirror_path)
       return actual_remote_url
-
-    # Svn
-    if os.path.exists(os.path.join(self.checkout_path, '.svn')):
-      return scm.SVN.CaptureLocalInfo([], self.checkout_path)['URL']
     return None
 
   def DoesRemoteURLMatch(self, options):
@@ -211,7 +197,7 @@ class SCMWrapper(object):
               == gclient_utils.SplitUrlRevision(self.url)[0].rstrip('/'))
     else:
       # This may occur if the self.checkout_path exists but does not contain a
-      # valid git or svn checkout.
+      # valid git checkout.
       return False
 
   def _DeleteOrMove(self, force):
@@ -285,13 +271,6 @@ class GitWrapper(SCMWrapper):
     # TODO(floitsch): get the time-stamp of the given revision and not just the
     # time-stamp of the currently checked out revision.
     return self._Capture(['log', '-n', '1', '--format=%ai'])
-
-  @staticmethod
-  def cleanup(options, args, file_list):
-    """'Cleanup' the repo.
-
-    There's no real git equivalent for the svn cleanup command, do a no-op.
-    """
 
   def diff(self, options, _args, _file_list):
     try:
@@ -377,7 +356,6 @@ class GitWrapper(SCMWrapper):
     # If a dependency is not pinned, track the default remote branch.
     default_rev = 'refs/remotes/%s/master' % self.remote
     url, deps_revision = gclient_utils.SplitUrlRevision(self.url)
-    rev_str = ""
     revision = deps_revision
     managed = True
     if options.revision:
@@ -394,21 +372,10 @@ class GitWrapper(SCMWrapper):
     if managed:
       self._DisableHooks()
 
-    if gclient_utils.IsDateRevision(revision):
-      # Date-revisions only work on git-repositories if the reflog hasn't
-      # expired yet. Use rev-list to get the corresponding revision.
-      #  git rev-list -n 1 --before='time-stamp' branchname
-      if options.transitive:
-        self.Print('Warning: --transitive only works for SVN repositories.')
-        revision = default_rev
-
-    rev_str = ' at %s' % revision
-    files = [] if file_list is not None else None
-
     printed_path = False
     verbose = []
     if options.verbose:
-      self.Print('_____ %s%s' % (self.relpath, rev_str), timestamp=False)
+      self.Print('_____ %s at %s' % (self.relpath, revision), timestamp=False)
       verbose = ['--verbose']
       printed_path = True
 
@@ -489,7 +456,7 @@ class GitWrapper(SCMWrapper):
       self.Print('_____ switching %s to a new upstream' % self.relpath)
       if not (options.force or options.reset):
         # Make sure it's clean
-        self._CheckClean(rev_str)
+        self._CheckClean(revision)
       # Switch over to the new upstream
       self._Run(['remote', 'set-url', self.remote, url], options)
       if mirror:
@@ -513,7 +480,7 @@ class GitWrapper(SCMWrapper):
     # 0) HEAD is detached. Probably from our initial clone.
     #   - make sure HEAD is contained by a named ref, then update.
     # Cases 1-4. HEAD is a branch.
-    # 1) current branch is not tracking a remote branch (could be git-svn)
+    # 1) current branch is not tracking a remote branch
     #   - try to rebase onto the new hash or branch
     # 2) current branch is tracking a remote branch with local committed
     #    changes, but the DEPS file switched to point to a hash
@@ -566,8 +533,8 @@ class GitWrapper(SCMWrapper):
 
     if current_type == 'detached':
       # case 0
-      self._CheckClean(rev_str)
-      self._CheckDetachedHead(rev_str, options)
+      self._CheckClean(revision)
+      self._CheckDetachedHead(revision, options)
       if self._Capture(['rev-list', '-n', '1', 'HEAD']) == revision:
         self.Print('Up-to-date; skipping checkout.')
       else:
@@ -580,28 +547,21 @@ class GitWrapper(SCMWrapper):
             quiet=True,
         )
       if not printed_path:
-        self.Print('_____ %s%s' % (self.relpath, rev_str), timestamp=False)
+        self.Print('_____ %s at %s' % (self.relpath, revision), timestamp=False)
     elif current_type == 'hash':
       # case 1
-      if scm.GIT.IsGitSvn(self.checkout_path) and upstream_branch is not None:
-        # Our git-svn branch (upstream_branch) is our upstream
-        self._AttemptRebase(upstream_branch, files, options,
-                            newbase=revision, printed_path=printed_path,
-                            merge=options.merge)
-        printed_path = True
-      else:
-        # Can't find a merge-base since we don't know our upstream. That makes
-        # this command VERY likely to produce a rebase failure. For now we
-        # assume origin is our upstream since that's what the old behavior was.
-        upstream_branch = self.remote
-        if options.revision or deps_revision:
-          upstream_branch = revision
-        self._AttemptRebase(upstream_branch, files, options,
-                            printed_path=printed_path, merge=options.merge)
-        printed_path = True
+      # Can't find a merge-base since we don't know our upstream. That makes
+      # this command VERY likely to produce a rebase failure. For now we
+      # assume origin is our upstream since that's what the old behavior was.
+      upstream_branch = self.remote
+      if options.revision or deps_revision:
+        upstream_branch = revision
+      self._AttemptRebase(upstream_branch, file_list, options,
+                          printed_path=printed_path, merge=options.merge)
+      printed_path = True
     elif rev_type == 'hash':
       # case 2
-      self._AttemptRebase(upstream_branch, files, options,
+      self._AttemptRebase(upstream_branch, file_list, options,
                           newbase=revision, printed_path=printed_path,
                           merge=options.merge)
       printed_path = True
@@ -609,7 +569,7 @@ class GitWrapper(SCMWrapper):
       # case 4
       new_base = ''.join(remote_ref)
       if not printed_path:
-        self.Print('_____ %s%s' % (self.relpath, rev_str), timestamp=False)
+        self.Print('_____ %s at %s' % (self.relpath, revision), timestamp=False)
       switch_error = ("Could not switch upstream branch from %s to %s\n"
                      % (upstream_branch, new_base) +
                      "Please use --force or merge or rebase manually:\n" +
@@ -618,7 +578,7 @@ class GitWrapper(SCMWrapper):
       force_switch = False
       if options.force:
         try:
-          self._CheckClean(rev_str)
+          self._CheckClean(revision)
           # case 4a
           force_switch = True
         except gclient_utils.Error as e:
@@ -638,8 +598,8 @@ class GitWrapper(SCMWrapper):
         raise gclient_utils.Error(switch_error)
     else:
       # case 3 - the default case
-      if files is not None:
-        files = self._Capture(['diff', upstream_branch, '--name-only']).split()
+      rebase_files = self._Capture(
+          ['diff', upstream_branch, '--name-only']).split()
       if verbose:
         self.Print('Trying fast-forward merge to branch : %s' % upstream_branch)
       try:
@@ -651,10 +611,11 @@ class GitWrapper(SCMWrapper):
         merge_args.append(upstream_branch)
         merge_output = self._Capture(merge_args)
       except subprocess2.CalledProcessError as e:
+        rebase_files = []
         if re.match('fatal: Not possible to fast-forward, aborting.', e.stderr):
-          files = []
           if not printed_path:
-            self.Print('_____ %s%s' % (self.relpath, rev_str), timestamp=False)
+            self.Print('_____ %s at %s' % (self.relpath, revision),
+                       timestamp=False)
             printed_path = True
           while True:
             if not options.auto_rebase:
@@ -667,7 +628,7 @@ class GitWrapper(SCMWrapper):
               except ValueError:
                 raise gclient_utils.Error('Invalid Character')
             if options.auto_rebase or re.match(r'yes|y', action, re.I):
-              self._AttemptRebase(upstream_branch, files, options,
+              self._AttemptRebase(upstream_branch, rebase_files, options,
                                   printed_path=printed_path, merge=False)
               printed_path = True
               break
@@ -686,7 +647,8 @@ class GitWrapper(SCMWrapper):
                       "changes or stash them before you can merge.\n",
                       e.stderr):
           if not printed_path:
-            self.Print('_____ %s%s' % (self.relpath, rev_str), timestamp=False)
+            self.Print('_____ %s at %s' % (self.relpath, revision),
+                       timestamp=False)
             printed_path = True
           raise gclient_utils.Error(e.stderr)
         else:
@@ -698,7 +660,8 @@ class GitWrapper(SCMWrapper):
         # Fast-forward merge was successful
         if not re.match('Already up-to-date.', merge_output) or verbose:
           if not printed_path:
-            self.Print('_____ %s%s' % (self.relpath, rev_str), timestamp=False)
+            self.Print('_____ %s at %s' % (self.relpath, revision),
+                       timestamp=False)
             printed_path = True
           self.Print(merge_output.strip())
           if not verbose:
@@ -706,16 +669,17 @@ class GitWrapper(SCMWrapper):
             # whitespace between projects when syncing.
             self.Print('')
 
-    if file_list is not None:
-      file_list.extend([os.path.join(self.checkout_path, f) for f in files])
+      if file_list is not None:
+        file_list.extend(
+            [os.path.join(self.checkout_path, f) for f in rebase_files])
 
     # If the rebase generated a conflict, abort and ask user to fix
     if self._IsRebasing():
-      raise gclient_utils.Error('\n____ %s%s\n'
+      raise gclient_utils.Error('\n____ %s at %s\n'
                                 '\nConflict while rebasing this branch.\n'
                                 'Fix the conflict and run gclient again.\n'
                                 'See man git-rebase for details.\n'
-                                % (self.relpath, rev_str))
+                                % (self.relpath, revision))
 
     if verbose:
       self.Print('Checked out revision %s' % self.revinfo(options, (), None),
@@ -798,75 +762,30 @@ class GitWrapper(SCMWrapper):
       except subprocess2.CalledProcessError:
         merge_base = []
       self._Run(['diff', '--name-status'] + merge_base, options,
-                stdout=self.out_fh)
+                stdout=self.out_fh, always=options.verbose)
       if file_list is not None:
         files = self._Capture(['diff', '--name-only'] + merge_base).split()
         file_list.extend([os.path.join(self.checkout_path, f) for f in files])
 
   def GetUsableRev(self, rev, options):
-    """Finds a useful revision for this repository.
-
-    If SCM is git-svn and the head revision is less than |rev|, git svn fetch
-    will be called on the source."""
+    """Finds a useful revision for this repository."""
     sha1 = None
     if not os.path.isdir(self.checkout_path):
       raise NoUsableRevError(
-          ( 'We could not find a valid hash for safesync_url response "%s".\n'
-            'Safesync URLs with a git checkout currently require the repo to\n'
-            'be cloned without a safesync_url before adding the safesync_url.\n'
-            'For more info, see: '
-            'http://code.google.com/p/chromium/wiki/UsingNewGit'
-            '#Initial_checkout' ) % rev)
-    elif rev.isdigit() and len(rev) < 7:
-      # Handles an SVN rev.  As an optimization, only verify an SVN revision as
-      # [0-9]{1,6} for now to avoid making a network request.
-      if scm.GIT.IsGitSvn(cwd=self.checkout_path):
-        local_head = scm.GIT.GetGitSvnHeadRev(cwd=self.checkout_path)
-        if not local_head or local_head < int(rev):
-          try:
-            logging.debug('Looking for git-svn configuration optimizations.')
-            if scm.GIT.Capture(['config', '--get', 'svn-remote.svn.fetch'],
-                             cwd=self.checkout_path):
-              self._Fetch(options)
-          except subprocess2.CalledProcessError:
-            logging.debug('git config --get svn-remote.svn.fetch failed, '
-                          'ignoring possible optimization.')
-          if options.verbose:
-            self.Print('Running git svn fetch. This might take a while.\n')
-          scm.GIT.Capture(['svn', 'fetch'], cwd=self.checkout_path)
-        try:
-          sha1 = scm.GIT.GetBlessedSha1ForSvnRev(
-              cwd=self.checkout_path, rev=rev)
-        except gclient_utils.Error, e:
-          sha1 = e.message
-          self.Print('Warning: Could not find a git revision with accurate\n'
-                 '.DEPS.git that maps to SVN revision %s.  Sync-ing to\n'
-                 'the closest sane git revision, which is:\n'
-                 '  %s\n' % (rev, e.message))
-        if not sha1:
-          raise NoUsableRevError(
-              ( 'It appears that either your git-svn remote is incorrectly\n'
-                'configured or the revision in your safesync_url is\n'
-                'higher than git-svn remote\'s HEAD as we couldn\'t find a\n'
-                'corresponding git hash for SVN rev %s.' ) % rev)
+          'This is not a git repo, so we cannot get a usable rev.')
+
+    if scm.GIT.IsValidRevision(cwd=self.checkout_path, rev=rev):
+      sha1 = rev
     else:
+      # May exist in origin, but we don't have it yet, so fetch and look
+      # again.
+      self._Fetch(options)
       if scm.GIT.IsValidRevision(cwd=self.checkout_path, rev=rev):
         sha1 = rev
-      else:
-        # May exist in origin, but we don't have it yet, so fetch and look
-        # again.
-        self._Fetch(options)
-        if scm.GIT.IsValidRevision(cwd=self.checkout_path, rev=rev):
-          sha1 = rev
 
     if not sha1:
       raise NoUsableRevError(
-          ( 'We could not find a valid hash for safesync_url response "%s".\n'
-            'Safesync URLs with a git checkout currently require a git-svn\n'
-            'remote or a safesync_url that provides git sha1s. Please add a\n'
-            'git-svn remote or change your safesync_url. For more info, see:\n'
-            'http://code.google.com/p/chromium/wiki/UsingNewGit'
-            '#Initial_checkout' ) % rev)
+          'Hash %s does not appear to be a valid hash in this repo.' % rev)
 
     return sha1
 
@@ -1120,35 +1039,35 @@ class GitWrapper(SCMWrapper):
       os.path.isdir(os.path.join(g, "rebase-merge")) or
       os.path.isdir(os.path.join(g, "rebase-apply")))
 
-  def _CheckClean(self, rev_str):
+  def _CheckClean(self, revision):
     lockfile = os.path.join(self.checkout_path, ".git", "index.lock")
     if os.path.exists(lockfile):
       raise gclient_utils.Error(
-        '\n____ %s%s\n'
+        '\n____ %s at %s\n'
         '\tYour repo is locked, possibly due to a concurrent git process.\n'
         '\tIf no git executable is running, then clean up %r and try again.\n'
-        % (self.relpath, rev_str, lockfile))
+        % (self.relpath, revision, lockfile))
 
     # Make sure the tree is clean; see git-rebase.sh for reference
     try:
       scm.GIT.Capture(['update-index', '--ignore-submodules', '--refresh'],
                       cwd=self.checkout_path)
     except subprocess2.CalledProcessError:
-      raise gclient_utils.Error('\n____ %s%s\n'
+      raise gclient_utils.Error('\n____ %s at %s\n'
                                 '\tYou have unstaged changes.\n'
                                 '\tPlease commit, stash, or reset.\n'
-                                  % (self.relpath, rev_str))
+                                  % (self.relpath, revision))
     try:
       scm.GIT.Capture(['diff-index', '--cached', '--name-status', '-r',
                        '--ignore-submodules', 'HEAD', '--'],
                        cwd=self.checkout_path)
     except subprocess2.CalledProcessError:
-      raise gclient_utils.Error('\n____ %s%s\n'
+      raise gclient_utils.Error('\n____ %s at %s\n'
                                 '\tYour index contains uncommitted changes\n'
                                 '\tPlease commit, stash, or reset.\n'
-                                  % (self.relpath, rev_str))
+                                  % (self.relpath, revision))
 
-  def _CheckDetachedHead(self, rev_str, _options):
+  def _CheckDetachedHead(self, revision, _options):
     # HEAD is detached. Make sure it is safe to move away from (i.e., it is
     # reference by a commit). If not, error out -- most likely a rebase is
     # in progress, try to detect so we can give a better error.
@@ -1159,12 +1078,12 @@ class GitWrapper(SCMWrapper):
       # Commit is not contained by any rev. See if the user is rebasing:
       if self._IsRebasing():
         # Punt to the user
-        raise gclient_utils.Error('\n____ %s%s\n'
+        raise gclient_utils.Error('\n____ %s at %s\n'
                                   '\tAlready in a conflict, i.e. (no branch).\n'
                                   '\tFix the conflict and run gclient again.\n'
                                   '\tOr to abort run:\n\t\tgit-rebase --abort\n'
                                   '\tSee man git-rebase for details.\n'
-                                   % (self.relpath, rev_str))
+                                   % (self.relpath, revision))
       # Let's just save off the commit so we can proceed.
       name = ('saved-by-gclient-' +
               self._Capture(['rev-parse', '--short', 'HEAD']))
@@ -1206,7 +1125,6 @@ class GitWrapper(SCMWrapper):
     return self._Capture(checkout_args)
 
   def _Fetch(self, options, remote=None, prune=False, quiet=False):
-    kill_timeout = float(os.getenv('GCLIENT_KILL_GIT_FETCH_AFTER', 0))
     cfg = gclient_utils.DefaultIndexPackConfig(self.url)
     fetch_cmd =  cfg + [
         'fetch',
@@ -1219,8 +1137,7 @@ class GitWrapper(SCMWrapper):
       fetch_cmd.append('--verbose')
     elif quiet:
       fetch_cmd.append('--quiet')
-    self._Run(fetch_cmd, options, show_header=options.verbose, retry=True,
-              kill_timeout=kill_timeout)
+    self._Run(fetch_cmd, options, show_header=options.verbose, retry=True)
 
     # Return the revision that was fetched; this will be stored in 'FETCH_HEAD'
     return self._Capture(['rev-parse', '--verify', 'FETCH_HEAD'])
@@ -1245,7 +1162,7 @@ class GitWrapper(SCMWrapper):
       self._Fetch(options, prune=options.force)
 
   def _Run(self, args, options, show_header=True, **kwargs):
-    # Disable 'unused options' warning | pylint: disable=W0613
+    # Disable 'unused options' warning | pylint: disable=unused-argument
     kwargs.setdefault('cwd', self.checkout_path)
     kwargs.setdefault('stdout', self.out_fh)
     kwargs['filter_fn'] = self.filter
@@ -1256,490 +1173,3 @@ class GitWrapper(SCMWrapper):
       gclient_utils.CheckCallAndFilterAndHeader(cmd, env=env, **kwargs)
     else:
       gclient_utils.CheckCallAndFilter(cmd, env=env, **kwargs)
-
-
-class SVNWrapper(SCMWrapper):
-  """ Wrapper for SVN """
-  name = 'svn'
-  _PRINTED_DEPRECATION = False
-
-  _MESSAGE = (
-    'Oh hai! You are using subversion. Chrome infra is eager to get rid of',
-    'svn support so please switch to git.',
-    'Tracking bug: http://crbug.com/475320',
-    'If you are a project owner, you may request git migration assistance at: ',
-    '  https://code.google.com/p/chromium/issues/entry?template=Infra-Git')
-
-  def __init__(self, *args, **kwargs):
-    super(SVNWrapper, self).__init__(*args, **kwargs)
-    suppress_deprecated_notice = os.environ.get(
-        'SUPPRESS_DEPRECATED_SVN_NOTICE', False)
-    if not SVNWrapper._PRINTED_DEPRECATION and not suppress_deprecated_notice:
-      SVNWrapper._PRINTED_DEPRECATION = True
-      sys.stderr.write('\n'.join(self._MESSAGE) + '\n')
-
-  @staticmethod
-  def BinaryExists():
-    """Returns true if the command exists."""
-    try:
-      result, version = scm.SVN.AssertVersion('1.4')
-      if not result:
-        raise gclient_utils.Error('SVN version is older than 1.4: %s' % version)
-      return result
-    except OSError:
-      return False
-
-  def GetCheckoutRoot(self):
-    return scm.SVN.GetCheckoutRoot(self.checkout_path)
-
-  def GetRevisionDate(self, revision):
-    """Returns the given revision's date in ISO-8601 format (which contains the
-    time zone)."""
-    date = scm.SVN.Capture(
-        ['propget', '--revprop', 'svn:date', '-r', revision],
-        os.path.join(self.checkout_path, '.'))
-    return date.strip()
-
-  def cleanup(self, options, args, _file_list):
-    """Cleanup working copy."""
-    self._Run(['cleanup'] + args, options)
-
-  def diff(self, options, args, _file_list):
-    # NOTE: This function does not currently modify file_list.
-    if not os.path.isdir(self.checkout_path):
-      raise gclient_utils.Error('Directory %s is not present.' %
-          self.checkout_path)
-    self._Run(['diff'] + args, options)
-
-  def pack(self, _options, args, _file_list):
-    """Generates a patch file which can be applied to the root of the
-    repository."""
-    if not os.path.isdir(self.checkout_path):
-      raise gclient_utils.Error('Directory %s is not present.' %
-          self.checkout_path)
-    gclient_utils.CheckCallAndFilter(
-        ['svn', 'diff', '-x', '--ignore-eol-style'] + args,
-        cwd=self.checkout_path,
-        print_stdout=False,
-        filter_fn=SvnDiffFilterer(self.relpath, print_func=self.Print).Filter)
-
-  def update(self, options, args, file_list):
-    """Runs svn to update or transparently checkout the working copy.
-
-    All updated files will be appended to file_list.
-
-    Raises:
-      Error: if can't get URL for relative path.
-    """
-    # Only update if hg is not controlling the directory.
-    hg_path = os.path.join(self.checkout_path, '.hg')
-    if os.path.exists(hg_path):
-      self.Print('________ found .hg directory; skipping %s' % self.relpath)
-      return
-
-    if args:
-      raise gclient_utils.Error("Unsupported argument(s): %s" % ",".join(args))
-
-    # revision is the revision to match. It is None if no revision is specified,
-    # i.e. the 'deps ain't pinned'.
-    url, revision = gclient_utils.SplitUrlRevision(self.url)
-    # Keep the original unpinned url for reference in case the repo is switched.
-    base_url = url
-    managed = True
-    if options.revision:
-      # Override the revision number.
-      revision = str(options.revision)
-    if revision:
-      if revision != 'unmanaged':
-        forced_revision = True
-        # Reconstruct the url.
-        url = '%s@%s' % (url, revision)
-        rev_str = ' at %s' % revision
-      else:
-        managed = False
-        revision = None
-    else:
-      forced_revision = False
-      rev_str = ''
-
-    exists = os.path.exists(self.checkout_path)
-    if exists and managed:
-      # Git is only okay if it's a git-svn checkout of the right repo.
-      if scm.GIT.IsGitSvn(self.checkout_path):
-        remote_url = scm.GIT.Capture(['config', '--local', '--get',
-                                      'svn-remote.svn.url'],
-                                     cwd=self.checkout_path).rstrip()
-        if remote_url.rstrip('/') == base_url.rstrip('/'):
-          self.Print('\n_____ %s looks like a git-svn checkout. Skipping.'
-                     % self.relpath)
-          return # TODO(borenet): Get the svn revision number?
-
-    # Get the existing scm url and the revision number of the current checkout.
-    if exists and managed:
-      try:
-        from_info = scm.SVN.CaptureLocalInfo(
-            [], os.path.join(self.checkout_path, '.'))
-      except (gclient_utils.Error, subprocess2.CalledProcessError):
-        self._DeleteOrMove(options.force)
-        exists = False
-
-    BASE_URLS = {
-        '/chrome/trunk/src': 'gs://chromium-svn-checkout/chrome/',
-        '/blink/trunk': 'gs://chromium-svn-checkout/blink/',
-    }
-    WHITELISTED_ROOTS = [
-        'svn://svn.chromium.org',
-        'svn://svn-mirror.golo.chromium.org',
-    ]
-    if not exists:
-      try:
-        # Split out the revision number since it's not useful for us.
-        base_path = urlparse.urlparse(url).path.split('@')[0]
-        # Check to see if we're on a whitelisted root.  We do this because
-        # only some svn servers have matching UUIDs.
-        local_parsed = urlparse.urlparse(url)
-        local_root = '%s://%s' % (local_parsed.scheme, local_parsed.netloc)
-        if ('CHROME_HEADLESS' in os.environ
-            and sys.platform == 'linux2'  # TODO(hinoka): Enable for win/mac.
-            and base_path in BASE_URLS
-            and local_root in WHITELISTED_ROOTS):
-
-          # Use a tarball for initial sync if we are on a bot.
-          # Get an unauthenticated gsutil instance.
-          gsutil = download_from_google_storage.Gsutil(
-              GSUTIL_DEFAULT_PATH, boto_path=os.devnull)
-
-          gs_path = BASE_URLS[base_path]
-          _, out, _ = gsutil.check_call('ls', gs_path)
-          # So that we can get the most recent revision.
-          sorted_items = sorted(out.splitlines())
-          latest_checkout = sorted_items[-1]
-
-          tempdir = tempfile.mkdtemp()
-          self.Print('Downloading %s...' % latest_checkout)
-          code, out, err = gsutil.check_call('cp', latest_checkout, tempdir)
-          if code:
-            self.Print('%s\n%s' % (out, err))
-            raise Exception()
-          filename = latest_checkout.split('/')[-1]
-          tarball = os.path.join(tempdir, filename)
-          self.Print('Unpacking into %s...' % self.checkout_path)
-          gclient_utils.safe_makedirs(self.checkout_path)
-          # TODO(hinoka): Use 7z for windows.
-          cmd = ['tar', '--extract', '--ungzip',
-                  '--directory', self.checkout_path,
-                  '--file', tarball]
-          gclient_utils.CheckCallAndFilter(
-              cmd, stdout=sys.stdout, print_stdout=True)
-
-          self.Print('Deleting temp file')
-          gclient_utils.rmtree(tempdir)
-
-          # Rewrite the repository root to match.
-          tarball_url = scm.SVN.CaptureLocalInfo(
-              ['.'], self.checkout_path)['Repository Root']
-          tarball_parsed = urlparse.urlparse(tarball_url)
-          tarball_root = '%s://%s' % (tarball_parsed.scheme,
-                                      tarball_parsed.netloc)
-
-          if tarball_root != local_root:
-            self.Print('Switching repository root to %s' % local_root)
-            self._Run(['switch', '--relocate', tarball_root,
-                       local_root, self.checkout_path],
-                      options)
-      except Exception as e:
-        self.Print('We tried to get a source tarball but failed.')
-        self.Print('Resuming normal operations.')
-        self.Print(str(e))
-
-      gclient_utils.safe_makedirs(os.path.dirname(self.checkout_path))
-      # We need to checkout.
-      command = ['checkout', url, self.checkout_path]
-      command = self._AddAdditionalUpdateFlags(command, options, revision)
-      self._RunAndGetFileList(command, options, file_list, self._root_dir)
-      return self.Svnversion()
-
-    if not managed:
-      self.Print(('________ unmanaged solution; skipping %s' % self.relpath))
-      if os.path.exists(os.path.join(self.checkout_path, '.svn')):
-        return self.Svnversion()
-      return
-
-    if 'URL' not in from_info:
-      raise gclient_utils.Error(
-          ('gclient is confused. Couldn\'t get the url for %s.\n'
-           'Try using @unmanaged.\n%s') % (
-            self.checkout_path, from_info))
-
-    # Look for locked directories.
-    dir_info = scm.SVN.CaptureStatus(
-        None, os.path.join(self.checkout_path, '.'))
-    if any(d[0][2] == 'L' for d in dir_info):
-      try:
-        self._Run(['cleanup', self.checkout_path], options)
-      except subprocess2.CalledProcessError, e:
-        # Get the status again, svn cleanup may have cleaned up at least
-        # something.
-        dir_info = scm.SVN.CaptureStatus(
-            None, os.path.join(self.checkout_path, '.'))
-
-        # Try to fix the failures by removing troublesome files.
-        for d in dir_info:
-          if d[0][2] == 'L':
-            if d[0][0] == '!' and options.force:
-              # We don't pass any files/directories to CaptureStatus and set
-              # cwd=self.checkout_path, so we should get relative paths here.
-              assert not os.path.isabs(d[1])
-              path_to_remove = os.path.normpath(
-                  os.path.join(self.checkout_path, d[1]))
-              self.Print('Removing troublesome path %s' % path_to_remove)
-              gclient_utils.rmtree(path_to_remove)
-            else:
-              self.Print(
-                  'Not removing troublesome path %s automatically.' % d[1])
-              if d[0][0] == '!':
-                self.Print('You can pass --force to enable automatic removal.')
-              raise e
-
-    # Retrieve the current HEAD version because svn is slow at null updates.
-    if options.manually_grab_svn_rev and not revision:
-      from_info_live = scm.SVN.CaptureRemoteInfo(from_info['URL'])
-      revision = str(from_info_live['Revision'])
-      rev_str = ' at %s' % revision
-
-    if from_info['URL'].rstrip('/') != base_url.rstrip('/'):
-      # The repository url changed, need to switch.
-      try:
-        to_info = scm.SVN.CaptureRemoteInfo(url)
-      except (gclient_utils.Error, subprocess2.CalledProcessError):
-        # The url is invalid or the server is not accessible, it's safer to bail
-        # out right now.
-        raise gclient_utils.Error('This url is unreachable: %s' % url)
-      can_switch = ((from_info['Repository Root'] != to_info['Repository Root'])
-                    and (from_info['UUID'] == to_info['UUID']))
-      if can_switch:
-        self.Print('_____ relocating %s to a new checkout' % self.relpath)
-        # We have different roots, so check if we can switch --relocate.
-        # Subversion only permits this if the repository UUIDs match.
-        # Perform the switch --relocate, then rewrite the from_url
-        # to reflect where we "are now."  (This is the same way that
-        # Subversion itself handles the metadata when switch --relocate
-        # is used.)  This makes the checks below for whether we
-        # can update to a revision or have to switch to a different
-        # branch work as expected.
-        # TODO(maruel):  TEST ME !
-        command = ['switch', '--relocate',
-                   from_info['Repository Root'],
-                   to_info['Repository Root'],
-                   self.relpath]
-        self._Run(command, options, cwd=self._root_dir)
-        from_info['URL'] = from_info['URL'].replace(
-            from_info['Repository Root'],
-            to_info['Repository Root'])
-      else:
-        if not options.force and not options.reset:
-          # Look for local modifications but ignore unversioned files.
-          for status in scm.SVN.CaptureStatus(None, self.checkout_path):
-            if status[0][0] != '?':
-              raise gclient_utils.Error(
-                  ('Can\'t switch the checkout to %s; UUID don\'t match and '
-                   'there is local changes in %s. Delete the directory and '
-                   'try again.') % (url, self.checkout_path))
-        # Ok delete it.
-        self.Print('_____ switching %s to a new checkout' % self.relpath)
-        gclient_utils.rmtree(self.checkout_path)
-        # We need to checkout.
-        command = ['checkout', url, self.checkout_path]
-        command = self._AddAdditionalUpdateFlags(command, options, revision)
-        self._RunAndGetFileList(command, options, file_list, self._root_dir)
-        return self.Svnversion()
-
-    # If the provided url has a revision number that matches the revision
-    # number of the existing directory, then we don't need to bother updating.
-    if not options.force and str(from_info['Revision']) == revision:
-      if options.verbose or not forced_revision:
-        self.Print('_____ %s%s' % (self.relpath, rev_str), timestamp=False)
-    else:
-      command = ['update', self.checkout_path]
-      command = self._AddAdditionalUpdateFlags(command, options, revision)
-      self._RunAndGetFileList(command, options, file_list, self._root_dir)
-
-    # If --reset and --delete_unversioned_trees are specified, remove any
-    # untracked files and directories.
-    if options.reset and options.delete_unversioned_trees:
-      for status in scm.SVN.CaptureStatus(None, self.checkout_path):
-        full_path = os.path.join(self.checkout_path, status[1])
-        if (status[0][0] == '?'
-            and os.path.isdir(full_path)
-            and not os.path.islink(full_path)):
-          self.Print('_____ removing unversioned directory %s' % status[1])
-          gclient_utils.rmtree(full_path)
-    return self.Svnversion()
-
-  def updatesingle(self, options, args, file_list):
-    filename = args.pop()
-    if scm.SVN.AssertVersion("1.5")[0]:
-      if not os.path.exists(os.path.join(self.checkout_path, '.svn')):
-        # Create an empty checkout and then update the one file we want.  Future
-        # operations will only apply to the one file we checked out.
-        command = ["checkout", "--depth", "empty", self.url, self.checkout_path]
-        self._Run(command, options, cwd=self._root_dir)
-        if os.path.exists(os.path.join(self.checkout_path, filename)):
-          os.remove(os.path.join(self.checkout_path, filename))
-        command = ["update", filename]
-        self._RunAndGetFileList(command, options, file_list)
-      # After the initial checkout, we can use update as if it were any other
-      # dep.
-      self.update(options, args, file_list)
-    else:
-      # If the installed version of SVN doesn't support --depth, fallback to
-      # just exporting the file.  This has the downside that revision
-      # information is not stored next to the file, so we will have to
-      # re-export the file every time we sync.
-      if not os.path.exists(self.checkout_path):
-        gclient_utils.safe_makedirs(self.checkout_path)
-      command = ["export", os.path.join(self.url, filename),
-                 os.path.join(self.checkout_path, filename)]
-      command = self._AddAdditionalUpdateFlags(command, options,
-          options.revision)
-      self._Run(command, options, cwd=self._root_dir)
-
-  def revert(self, options, _args, file_list):
-    """Reverts local modifications. Subversion specific.
-
-    All reverted files will be appended to file_list, even if Subversion
-    doesn't know about them.
-    """
-    if not os.path.isdir(self.checkout_path):
-      if os.path.exists(self.checkout_path):
-        gclient_utils.rmtree(self.checkout_path)
-      # svn revert won't work if the directory doesn't exist. It needs to
-      # checkout instead.
-      self.Print('_____ %s is missing, synching instead' % self.relpath)
-      # Don't reuse the args.
-      return self.update(options, [], file_list)
-
-    if not os.path.isdir(os.path.join(self.checkout_path, '.svn')):
-      if os.path.isdir(os.path.join(self.checkout_path, '.git')):
-        self.Print('________ found .git directory; skipping %s' % self.relpath)
-        return
-      if os.path.isdir(os.path.join(self.checkout_path, '.hg')):
-        self.Print('________ found .hg directory; skipping %s' % self.relpath)
-        return
-      if not options.force:
-        raise gclient_utils.Error('Invalid checkout path, aborting')
-      self.Print(
-          '\n_____ %s is not a valid svn checkout, synching instead' %
-          self.relpath)
-      gclient_utils.rmtree(self.checkout_path)
-      # Don't reuse the args.
-      return self.update(options, [], file_list)
-
-    def printcb(file_status):
-      if file_list is not None:
-        file_list.append(file_status[1])
-      if logging.getLogger().isEnabledFor(logging.INFO):
-        logging.info('%s%s' % (file_status[0], file_status[1]))
-      else:
-        self.Print(os.path.join(self.checkout_path, file_status[1]))
-    scm.SVN.Revert(self.checkout_path, callback=printcb)
-
-    # Revert() may delete the directory altogether.
-    if not os.path.isdir(self.checkout_path):
-      # Don't reuse the args.
-      return self.update(options, [], file_list)
-
-    try:
-      # svn revert is so broken we don't even use it. Using
-      # "svn up --revision BASE" achieve the same effect.
-      # file_list will contain duplicates.
-      self._RunAndGetFileList(['update', '--revision', 'BASE'], options,
-          file_list)
-    except OSError, e:
-      # Maybe the directory disappeared meanwhile. Do not throw an exception.
-      logging.error('Failed to update:\n%s' % str(e))
-
-  def revinfo(self, _options, _args, _file_list):
-    """Display revision"""
-    try:
-      return scm.SVN.CaptureRevision(self.checkout_path)
-    except (gclient_utils.Error, subprocess2.CalledProcessError):
-      return None
-
-  def runhooks(self, options, args, file_list):
-    self.status(options, args, file_list)
-
-  def status(self, options, args, file_list):
-    """Display status information."""
-    command = ['status'] + args
-    if not os.path.isdir(self.checkout_path):
-      # svn status won't work if the directory doesn't exist.
-      self.Print(('\n________ couldn\'t run \'%s\' in \'%s\':\n'
-             'The directory does not exist.') %
-                (' '.join(command), self.checkout_path))
-      # There's no file list to retrieve.
-    else:
-      self._RunAndGetFileList(command, options, file_list)
-
-  def GetUsableRev(self, rev, _options):
-    """Verifies the validity of the revision for this repository."""
-    if not scm.SVN.IsValidRevision(url='%s@%s' % (self.url, rev)):
-      raise NoUsableRevError(
-        ( '%s isn\'t a valid revision. Please check that your safesync_url is\n'
-          'correct.') % rev)
-    return rev
-
-  def FullUrlForRelativeUrl(self, url):
-    # Find the forth '/' and strip from there. A bit hackish.
-    return '/'.join(self.url.split('/')[:4]) + url
-
-  def _Run(self, args, options, **kwargs):
-    """Runs a commands that goes to stdout."""
-    kwargs.setdefault('cwd', self.checkout_path)
-    gclient_utils.CheckCallAndFilterAndHeader(['svn'] + args,
-        always=options.verbose, **kwargs)
-
-  def Svnversion(self):
-    """Runs the lowest checked out revision in the current project."""
-    info = scm.SVN.CaptureLocalInfo([], os.path.join(self.checkout_path, '.'))
-    return info['Revision']
-
-  def _RunAndGetFileList(self, args, options, file_list, cwd=None):
-    """Runs a commands that goes to stdout and grabs the file listed."""
-    cwd = cwd or self.checkout_path
-    scm.SVN.RunAndGetFileList(
-        options.verbose,
-        args + ['--ignore-externals'],
-        cwd=cwd,
-        file_list=file_list)
-
-  @staticmethod
-  def _AddAdditionalUpdateFlags(command, options, revision):
-    """Add additional flags to command depending on what options are set.
-    command should be a list of strings that represents an svn command.
-
-    This method returns a new list to be used as a command."""
-    new_command = command[:]
-    if revision:
-      new_command.extend(['--revision', str(revision).strip()])
-    # We don't want interaction when jobs are used.
-    if options.jobs > 1:
-      new_command.append('--non-interactive')
-    # --force was added to 'svn update' in svn 1.5.
-    # --accept was added to 'svn update' in svn 1.6.
-    if not scm.SVN.AssertVersion('1.5')[0]:
-      return new_command
-
-    # It's annoying to have it block in the middle of a sync, just sensible
-    # defaults.
-    if options.force:
-      new_command.append('--force')
-      if command[0] != 'checkout' and scm.SVN.AssertVersion('1.6')[0]:
-        new_command.extend(('--accept', 'theirs-conflict'))
-    elif options.manually_grab_svn_rev:
-      new_command.append('--force')
-      if command[0] != 'checkout' and scm.SVN.AssertVersion('1.6')[0]:
-        new_command.extend(('--accept', 'postpone'))
-    elif command[0] != 'checkout' and scm.SVN.AssertVersion('1.6')[0]:
-      new_command.extend(('--accept', 'postpone'))
-    return new_command

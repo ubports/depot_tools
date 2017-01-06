@@ -55,6 +55,8 @@ import urlparse
 
 from multiprocessing.pool import ThreadPool
 
+import appengine_mapper
+
 # The configparser module was renamed in Python 3.
 try:
   import configparser
@@ -129,6 +131,9 @@ VCS_ABBREVIATIONS = {}  # alias: name, ...
 for vcs in VCS:
   VCS_SHORT_NAMES.append(min(vcs['aliases'], key=len))
   VCS_ABBREVIATIONS.update((alias, vcs['name']) for alias in vcs['aliases'])
+
+UPLOAD_TIMEOUT = 120
+MAX_UPLOAD_ATTEMPTS = 3
 
 
 # The result of parsing Subversion's [auto-props] setting.
@@ -443,6 +448,7 @@ class AbstractRpcServer(object):
         tries += 1
         args = dict(kwargs)
         url = "%s%s%s" % (self.host, self.request_path_prefix, request_path)
+        url = appengine_mapper.MapUrl(url)
         if args:
           url += "?" + urllib.urlencode(args)
         req = self._CreateRequest(url=url, data=payload)
@@ -671,9 +677,9 @@ group.add_option("--git_similarity", action="store", dest="git_similarity",
                  metavar="SIM", type="int", default=50,
                  help=("Set the minimum similarity percentage for detecting "
                        "renames and copies. See `git diff -C`. (default 50)."))
-group.add_option("--git_only_search_patch", action="store_false", default=True,
+group.add_option("--git_find_copies_harder", action="store_true", default=False,
                  dest='git_find_copies_harder',
-                 help="Removes --find-copies-harder when seaching for copies")
+                 help="Adds --find-copies-harder when seaching for copies")
 group.add_option("--git_no_find_copies", action="store_false", default=True,
                  dest="git_find_copies",
                  help=("Prevents git from looking for copies (default off)."))
@@ -1013,27 +1019,41 @@ class VersionControlSystem(object):
     patches = dict()
     [patches.setdefault(v, k) for k, v in patch_list]
 
-    threads = []
-    thread_pool = ThreadPool(options.num_upload_threads)
+    def uploadAttempt():
+      threads = []
+      thread_pool = ThreadPool(options.num_upload_threads)
 
-    for filename in patches.keys():
-      base_content, new_content, is_binary, status = files[filename]
-      file_id_str = patches.get(filename)
-      if file_id_str.find("nobase") != -1:
-        base_content = None
-        file_id_str = file_id_str[file_id_str.rfind("_") + 1:]
-      file_id = int(file_id_str)
-      if base_content != None:
-        t = thread_pool.apply_async(UploadFile, args=(filename,
-            file_id, base_content, is_binary, status, True))
-        threads.append(t)
-      if new_content != None:
-        t = thread_pool.apply_async(UploadFile, args=(filename,
-            file_id, new_content, is_binary, status, False))
-        threads.append(t)
+      for filename in patches.keys():
+        base_content, new_content, is_binary, status = files[filename]
+        file_id_str = patches.get(filename)
+        if file_id_str.find("nobase") != -1:
+          base_content = None
+          file_id_str = file_id_str[file_id_str.rfind("_") + 1:]
+        file_id = int(file_id_str)
+        if base_content != None:
+          t = thread_pool.apply_async(UploadFile, args=(filename,
+              file_id, base_content, is_binary, status, True))
+          threads.append(t)
+        if new_content != None:
+          t = thread_pool.apply_async(UploadFile, args=(filename,
+              file_id, new_content, is_binary, status, False))
+          threads.append(t)
 
-    for t in threads:
-      print(t.get(timeout=60))
+      for t in threads:
+        print(t.get(timeout=UPLOAD_TIMEOUT))
+
+    success = False
+    for _ in range(MAX_UPLOAD_ATTEMPTS):
+      try:
+        uploadAttempt()
+        success = True
+        break
+      except multiprocessing.TimeoutError:
+        LOGGER.warning('Timeout error while uploading, retrying...')
+
+    if not success:
+      raise IOError(
+          '%d consecutive timeout errors, aborting!' % MAX_UPLOAD_ATTEMPTS)
 
   def IsImage(self, filename):
     """Returns true if the filename has an image extension."""
@@ -2098,7 +2118,7 @@ def UploadSeparatePatches(issue, rpc_server, patchset, data, options):
     threads.append(t)
 
   for t in threads:
-    result = t.get(timeout=60)
+    result = t.get(timeout=UPLOAD_TIMEOUT)
     print(result[0])
     rv.append(result[1])
 

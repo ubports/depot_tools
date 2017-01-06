@@ -42,6 +42,7 @@ TEST_CONFIGS = [
   'master_deps',
   'mojo',
   'nacl',
+  'ndk_next',
   'pdfium',
   'perf',
   'recipes_py',
@@ -81,7 +82,7 @@ def RunSteps(api):
   api.gclient.checkout(
       gclient_config=bl_cfg,
       with_branch_heads=True,
-      cwd=api.path['slave_build'].join('src', 'third_party'))
+      cwd=api.path['start_dir'].join('src', 'third_party'))
 
   api.gclient.break_locks()
 
@@ -94,6 +95,8 @@ def RunSteps(api):
 
 def GenTests(api):
   yield api.test('basic')
+
+  yield api.test('buildbot') + api.properties(path_config='buildbot')
 
   yield api.test('revision') + api.properties(revision='abc')
 

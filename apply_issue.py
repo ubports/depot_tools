@@ -159,7 +159,7 @@ def main():
     properties = None
     # Bad except clauses order (HTTPError is an ancestor class of
     # ClientLoginError)
-    # pylint: disable=E0701
+    # pylint: disable=bad-except-order
     try:
       properties = rietveld_obj.get_issue_properties(options.issue, False)
     except urllib2.HTTPError as e:
@@ -263,12 +263,8 @@ def main():
         patch.patchlevel += options.extra_patchlevel
     full_dir = os.path.abspath(options.root_dir)
     scm_type = scm.determine_scm(full_dir)
-    if scm_type == 'svn':
-      scm_obj = checkout.SvnCheckout(full_dir, None, None, None, None)
-    elif scm_type == 'git':
+    if scm_type == 'git':
       scm_obj = checkout.GitCheckout(full_dir, None, None, None, None)
-    elif scm_type == None:
-      scm_obj = checkout.RawCheckout(full_dir, None, None)
     else:
       parser.error('Couldn\'t determine the scm')
 
@@ -306,8 +302,6 @@ def main():
             '--nohooks',
             '--delete_unversioned_trees',
             ]
-        if scm_type == 'svn':
-          cmd.extend(['--revision', 'BASE'])
         if options.revision_mapping:
           cmd.extend(['--output-json', f])
 

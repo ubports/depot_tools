@@ -21,6 +21,8 @@ class DepotToolsApi(recipe_api.RecipeApi):
   def gn_py_path(self):
     return self.package_repo_resource('gn.py')
 
+  # TODO(dnj): Remove this once everything uses the "gsutil" recipe module
+  # version.
   @property
   def gsutil_py_path(self):
     return self.package_repo_resource('gsutil.py')
@@ -29,3 +31,7 @@ class DepotToolsApi(recipe_api.RecipeApi):
   def ninja_path(self):
     ninja_exe = 'ninja.exe' if self.m.platform.is_win else 'ninja'
     return self.package_repo_resource(ninja_exe)
+
+  @property
+  def presubmit_support_py_path(self):
+    return self.package_repo_resource('presubmit_support.py')

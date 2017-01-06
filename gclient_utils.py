@@ -179,9 +179,8 @@ def rmtree(path):
   Recursively removes a directory, even if it's marked read-only.
 
   shutil.rmtree() doesn't work on Windows if any of the files or directories
-  are read-only, which svn repositories and some .svn files are.  We need to
-  be able to force the files to be writable (i.e., deletable) as we traverse
-  the tree.
+  are read-only. We need to be able to force the files to be writable (i.e.,
+  deletable) as we traverse the tree.
 
   Even with all this, Windows still sometimes fails to delete a file, citing
   a permission error (maybe something to do with antivirus scans or disk
@@ -459,71 +458,9 @@ class GClientChildren(object):
           print >> sys.stderr, '  ', zombie.pid
 
 
-class _KillTimer(object):
-  """Timer that kills child process after certain interval since last poke or
-  creation.
-  """
-  # TODO(tandrii): we really want to make use of subprocess42 here, and not
-  # re-invent the wheel, but it's too much work :(
-
-  def __init__(self, timeout, child, child_info):
-    self._timeout = timeout
-    self._child = child
-    self._child_info = child_info
-
-    self._cv = threading.Condition()
-    # All items below are protected by condition above.
-    self._kill_at = None
-    self._killing_attempted = False
-    self._working = True
-    self._thread = None
-
-    # Start the timer immediately.
-    if self._timeout:
-      self._kill_at = time.time() + self._timeout
-      self._thread = threading.Thread(name='_KillTimer', target=self._work)
-      self._thread.daemon = True
-      self._thread.start()
-
-  @property
-  def killing_attempted(self):
-    return self._killing_attempted
-
-  def poke(self):
-    if not self._timeout:
-      return
-    with self._cv:
-      self._kill_at = time.time() + self._timeout
-
-  def cancel(self):
-    with self._cv:
-      self._working = False
-      self._cv.notifyAll()
-
-  def _work(self):
-    if not self._timeout:
-      return
-    while True:
-      with self._cv:
-        if not self._working:
-          return
-        left = self._kill_at - time.time()
-        if left > 0:
-          self._cv.wait(timeout=left)
-          continue
-        try:
-          logging.warn('killing child %s %s because of no output for %fs',
-                       self._child.pid, self._child_info, self._timeout)
-          self._killing_attempted = True
-          self._child.kill()
-        except OSError:
-          logging.exception('failed to kill child %s', self._child)
-        return
-
-
 def CheckCallAndFilter(args, stdout=None, filter_fn=None,
                        print_stdout=None, call_filter_on_first_line=False,
-                       retry=False, kill_timeout=None, **kwargs):
+                       retry=False, **kwargs):
   """Runs a command and calls back a filter function if needed.
 
   Accepts all subprocess2.Popen() parameters plus:
@@ -534,23 +471,16 @@ def CheckCallAndFilter(args, stdout=None, filter_fn=None,
     stdout: Can be any bufferable output.
     retry: If the process exits non-zero, sleep for a brief interval and try
            again, up to RETRY_MAX times.
-    kill_timeout: (float) if given, number of seconds after which process would
-           be killed. Must not be used with shell=True as only shell process
-           would be killed, but not processes spawned by shell.
 
   stderr is always redirected to stdout.
   """
   assert print_stdout or filter_fn
-  assert not kwargs.get('shell', False) or not kill_timeout, (
-      'kill_timeout should not be used with shell=True')
   stdout = stdout or sys.stdout
   output = cStringIO.StringIO()
   filter_fn = filter_fn or (lambda x: None)
 
   sleep_interval = RETRY_INITIAL_SLEEP
   run_cwd = kwargs.get('cwd', os.getcwd())
-  debug_kid_info = "'%s' in %s" % (' '.join('"%s"' % x for x in args), run_cwd)
-
   for _ in xrange(RETRY_MAX + 1):
     kid = subprocess2.Popen(
         args, bufsize=0, stdout=subprocess2.PIPE, stderr=subprocess2.STDOUT,
@@ -563,10 +493,10 @@ def CheckCallAndFilter(args, stdout=None, filter_fn=None,
 
     # Also, we need to forward stdout to prevent weird re-ordering of output.
     # This has to be done on a per byte basis to make sure it is not buffered:
-    # normally buffering is done for each line, but if svn requests input, no
-    # end-of-line character is output after the prompt and it would not show up.
+    # normally buffering is done for each line, but if the process requests
+    # input, no end-of-line character is output after the prompt and it would
+    # not show up.
     try:
-      timeout_killer = _KillTimer(kill_timeout, kid, debug_kid_info)
       in_byte = kid.stdout.read(1)
       if in_byte:
         if call_filter_on_first_line:
@@ -587,7 +517,6 @@ def CheckCallAndFilter(args, stdout=None, filter_fn=None,
         if len(in_line):
           filter_fn(in_line)
       rv = kid.wait()
-      timeout_killer.cancel()
 
       # Don't put this in a 'finally,' since the child may still run if we get
       # an exception.
@@ -601,12 +530,8 @@ def CheckCallAndFilter(args, stdout=None, filter_fn=None,
       return output.getvalue()
     if not retry:
       break
-    print ("WARNING: subprocess %s failed; will retry after a short nap..." %
-           debug_kid_info)
-    if timeout_killer.killing_attempted:
-      print('The subprocess above was likely killed because it looked hung. '
-            'Output thus far:\n> %s' %
-            ('\n> '.join(output.getvalue().splitlines())))
+    print ("WARNING: subprocess '%s' in %s failed; will retry after a short "
+           'nap...' % (' '.join('"%s"' % x for x in args), run_cwd))
     time.sleep(sleep_interval)
     sleep_interval *= 2
   raise subprocess2.CalledProcessError(
@@ -1135,7 +1060,7 @@ def GetEditor(git_editor=None):
   """Returns the most plausible editor to use.
 
   In order of preference:
-  - GIT_EDITOR/SVN_EDITOR environment variable
+  - GIT_EDITOR environment variable
   - core.editor git configuration variable (if supplied by git-cl)
   - VISUAL environment variable
   - EDITOR environment variable
@@ -1244,9 +1169,9 @@ def NumLocalCpus():
     try:
       import multiprocessing
       return multiprocessing.cpu_count()
-    except NotImplementedError:  # pylint: disable=W0702
+    except NotImplementedError:  # pylint: disable=bare-except
       # (UNIX) Query 'os.sysconf'.
-      # pylint: disable=E1101
+      # pylint: disable=no-member
       if hasattr(os, 'sysconf') and 'SC_NPROCESSORS_ONLN' in os.sysconf_names:
         return int(os.sysconf('SC_NPROCESSORS_ONLN'))
 

@@ -10,12 +10,11 @@ import os
 import sys
 import unittest
 
-#import test_env  # pylint: disable=W0403,W0611
+#import test_env  # pylint: disable=relative-import,unused-import
 
 sys.path.insert(0, os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
     'recipe_modules', 'bot_update', 'resources'))
-sys.platform = 'linux2'  # For consistency, ya know?
 import bot_update
 
 DEFAULT_PARAMS = {
@@ -164,10 +163,13 @@ def fake_git(*args, **kwargs):
 
 class BotUpdateUnittests(unittest.TestCase):
   def setUp(self):
+    sys.platform = 'linux2'  # For consistency, ya know?
     self.filesystem = FakeFilesystem()
     self.call = MockedCall(self.filesystem)
     self.gclient = MockedGclientSync(self.filesystem)
-    self.call.expect(('gclient', 'sync')).returns(self.gclient)
+    self.call.expect(
+        (sys.executable, '-u', bot_update.GCLIENT_PATH, 'sync')
+    ).returns(self.gclient)
     self.old_call = getattr(bot_update, 'call')
     self.params = copy.deepcopy(DEFAULT_PARAMS)
     setattr(bot_update, 'call', self.call)
@@ -186,6 +188,12 @@ class BotUpdateUnittests(unittest.TestCase):
     delattr(bot_update, 'open')
     setattr(codecs, 'open', self.old_codecs_open)
 
+  def overrideSetupForWindows(self):
+    sys.platform = 'win'
+    self.call.expect(
+        (sys.executable, '-u', bot_update.GCLIENT_PATH, 'sync')
+    ).returns(self.gclient)
+
   def testBasic(self):
     bot_update.ensure_checkout(**self.params)
     return self.call.records
@@ -194,6 +202,30 @@ class BotUpdateUnittests(unittest.TestCase):
     self.params['shallow'] = True
     bot_update.ensure_checkout(**self.params)
     return self.call.records
+
+  def testBreakLocks(self):
+    self.overrideSetupForWindows()
+    bot_update.ensure_checkout(**self.params)
+    gclient_sync_cmd = None
+    for record in self.call.records:
+      args = record[0]
+      if args[:4] == (sys.executable, '-u', bot_update.GCLIENT_PATH, 'sync'):
+        gclient_sync_cmd = args
+    self.assertTrue('--break_repo_locks' in gclient_sync_cmd)
+
+  def testGitCheckoutBreaksLocks(self):
+    self.overrideSetupForWindows()
+    path = '/b/build/slave/foo/build/.git'
+    lockfile = 'index.lock'
+    removed = []
+    old_os_walk = os.walk
+    old_os_remove = os.remove
+    setattr(os, 'walk', lambda _: [(path, None, [lockfile])])
+    setattr(os, 'remove', removed.append)
+    bot_update.ensure_checkout(**self.params)
+    setattr(os, 'walk', old_os_walk)
+    setattr(os, 'remove', old_os_remove)
+    self.assertTrue(os.path.join(path, lockfile) in removed)
 
 
 if __name__ == '__main__':

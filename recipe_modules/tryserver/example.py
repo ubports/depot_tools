@@ -15,7 +15,11 @@ DEPS = [
 
 
 def RunSteps(api):
-  api.path['checkout'] = api.path['slave_build']
+  if api.properties.get('set_failure_hash_with_no_steps'):
+    with api.tryserver.set_failure_hash():
+      raise api.step.StepFailure('boom!')
+
+  api.path['checkout'] = api.path['start_dir']
   if api.properties.get('patch_text'):
     api.step('patch_text test', [
         'echo', str(api.tryserver.get_footers(api.properties['patch_text']))])
@@ -50,10 +54,18 @@ def GenTests(api):
 
   yield (api.test('with_git_patch') +
          api.properties(
+              path_config='buildbot',
               patch_storage='git',
               patch_project='v8',
               patch_repo_url='http://patch.url/',
               patch_ref='johndoe#123.diff'))
+
+  yield (api.test('with_git_patch_luci') +
+         api.properties(
+             patch_storage='git',
+             patch_project='v8',
+             patch_repo_url='http://patch.url/',
+             patch_ref='johndoe#123.diff'))
 
   yield (api.test('with_rietveld_patch') +
          api.properties.tryserver() +
@@ -64,6 +76,24 @@ def GenTests(api):
   yield (api.test('with_rietveld_patch_new') +
          api.properties.tryserver(test_patch_root='sub/project') +
          description_step)
+
+  yield api.test('with_gerrit_patch_deprecated') + api.properties.tryserver(
+      patch_project='infra/infra',
+      gerrit='https://chromium-review.googlesource.com',
+      patch_storage='gerrit',
+      repository='https://chromium.googlesource.com/infra/infra',
+      rietveld=None,
+      **{
+        'event.change.id': 'infra%2Finfra~master~Ideadbeaf',
+        'event.change.number': 338811,
+        'event.change.url':
+          'https://chromium-review.googlesource.com/#/c/338811',
+        'event.patchSet.ref': 'refs/changes/11/338811/3',
+      }
+  )
+
+  yield (api.test('with_gerrit_patch') +
+         api.properties.tryserver(gerrit_project='infra/infra'))
 
   yield (api.test('with_wrong_patch_new') + api.platform('win', 32) +
          api.properties(test_patch_root='sub\\project'))
@@ -80,3 +110,6 @@ def GenTests(api):
              'parse description (2)',
              api.json.output({'Foo': ['bar']}))
   )
+
+  yield (api.test('set_failure_hash_with_no_steps') +
+         api.properties(set_failure_hash_with_no_steps=True))

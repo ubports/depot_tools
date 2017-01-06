@@ -41,6 +41,9 @@ class TryserverApi(recipe_api.RecipeApi):
   @property
   def is_gerrit_issue(self):
     """Returns true iff the properties exist to match a Gerrit issue."""
+    if self.m.properties.get('patch_storage') == 'gerrit':
+      return True
+    # TODO(tandrii): remove this, once nobody is using buildbot Gerrit Poller.
     return ('event.patchSet.ref' in self.m.properties and
             'event.change.url' in self.m.properties and
             'event.change.id' in self.m.properties)
@@ -101,7 +104,15 @@ class TryserverApi(recipe_api.RecipeApi):
     patch_ref = self.m.properties['patch_ref']
 
     patch_dir = self.m.path.mkdtemp('patch')
-    git_setup_py = self.m.path['build'].join('scripts', 'slave', 'git_setup.py')
+    try:
+      build_path = self.m.path['build']
+    except KeyError:
+      raise self.m.step.StepFailure(
+          'path["build"] is not defined. '
+          'Possibly this is a LUCI build. '
+          'tryserver.apply_from_git is not supported in LUCI builds.')
+
+    git_setup_py = build_path.join('scripts', 'slave', 'git_setup.py')
     git_setup_args = ['--path', patch_dir, '--url', patch_repo_url]
     patch_path = patch_dir.join('patch.diff')
 
@@ -167,7 +178,7 @@ class TryserverApi(recipe_api.RecipeApi):
     if patch_root is None:
       return self._old_get_files_affected_by_patch()
     if not kwargs.get('cwd'):
-      kwargs['cwd'] = self.m.path['slave_build'].join(patch_root)
+      kwargs['cwd'] = self.m.path['start_dir'].join(patch_root)
     step_result = self.m.git('diff', '--cached', '--name-only',
                              name='git diff to analyze patch',
                              stdout=self.m.raw_io.output(),
@@ -273,14 +284,17 @@ class TryserverApi(recipe_api.RecipeApi):
     except self.m.step.StepFailure as e:
       self.add_failure_reason(e.reason)
 
-      failure_hash = hashlib.sha1()
-      failure_hash.update(self.m.json.dumps(self._failure_reasons))
+      try:
+        step_result = self.m.step.active_result
+      except ValueError:
+        step_result = None
+      if step_result:
+        failure_hash = hashlib.sha1()
+        failure_hash.update(self.m.json.dumps(self._failure_reasons))
+        step_result.presentation.properties['failure_hash'] = (
+            failure_hash.hexdigest())
 
-      step_result = self.m.step.active_result
-      step_result.presentation.properties['failure_hash'] = \
-          failure_hash.hexdigest()
-
-      raise
+      raise e
 
   def get_footers(self, patch_text=None):
     """Retrieves footers from the patch description.

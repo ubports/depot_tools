@@ -45,7 +45,7 @@ class SCMMock(object):
   def FullUrlForRelativeUrl(self, url):
     return self.url + url
 
-  # pylint: disable=R0201
+  # pylint: disable=no-self-use
   def DoesRemoteURLMatch(self, _):
     return True
 
@@ -219,7 +219,7 @@ class GclientTest(trial_dir.TestCase):
     # Invalid urls causes pain when specifying requirements. Make sure it's
     # auto-fixed.
     d = gclient.Dependency(
-        None, 'name', 'proto://host/path/@revision', None, None, None, None,
+        None, 'name', 'proto://host/path/@revision', None, None, None,
         None, '', True, False)
     self.assertEquals('proto://host/path@revision', d.url)
 
@@ -230,31 +230,27 @@ class GclientTest(trial_dir.TestCase):
     obj.add_dependencies_and_close(
       [
         gclient.Dependency(
-          obj, 'foo', 'url', None, None, None, None, None, 'DEPS', True, False),
+          obj, 'foo', 'url', None, None, None, None, 'DEPS', True, False),
         gclient.Dependency(
-          obj, 'bar', 'url', None, None, None, None, None, 'DEPS', True, False),
+          obj, 'bar', 'url', None, None, None, None, 'DEPS', True, False),
       ],
       [])
     obj.dependencies[0].add_dependencies_and_close(
       [
         gclient.Dependency(
-          obj.dependencies[0], 'foo/dir1', 'url', None, None, None, None,
+          obj.dependencies[0], 'foo/dir1', 'url', None, None, None,
           None, 'DEPS', True, False),
         gclient.Dependency(
           obj.dependencies[0], 'foo/dir2',
-          gclient.GClientKeywords.FromImpl('bar'), None, None, None, None,
-          None, 'DEPS', True, False),
-        gclient.Dependency(
-          obj.dependencies[0], 'foo/dir3',
-          gclient.GClientKeywords.FileImpl('url'), None, None, None, None,
+          gclient.GClientKeywords.FromImpl('bar'), None, None, None,
           None, 'DEPS', True, False),
       ],
       [])
     # Make sure __str__() works fine.
-    # pylint: disable=W0212
+    # pylint: disable=protected-access
     obj.dependencies[0]._file_list.append('foo')
     str_obj = str(obj)
-    self.assertEquals(471, len(str_obj), '%d\n%s' % (len(str_obj), str_obj))
+    self.assertEquals(370, len(str_obj), '%d\n%s' % (len(str_obj), str_obj))
 
   def testHooks(self):
     topdir = self.root_dir
@@ -567,7 +563,7 @@ class GclientTest(trial_dir.TestCase):
     """Verifies expected behavior of LateOverride."""
     url = "git@github.com:dart-lang/spark.git"
     d = gclient.Dependency(None, 'name', 'url',
-                           None, None, None, None, None, '', True, False)
+                           None, None, None, None, '', True, False)
     late_url = d.LateOverride(url)
     self.assertEquals(url, late_url)
 

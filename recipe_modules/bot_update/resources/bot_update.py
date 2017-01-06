@@ -82,6 +82,7 @@ cache_dir = r%(cache_dir)s
 ATTEMPTS = 5
 
 GIT_CACHE_PATH = path.join(DEPOT_TOOLS_DIR, 'git_cache.py')
+GCLIENT_PATH = path.join(DEPOT_TOOLS_DIR, 'gclient.py')
 
 # If there is less than 100GB of disk space on the system, then we do
 # a shallow checkout.
@@ -299,7 +300,11 @@ def remove(target):
     os.makedirs(dead_folder)
   dest = path.join(dead_folder, uuid.uuid4().hex)
   print 'Marking for removal %s => %s' % (target, dest)
-  os.rename(target, dest)
+  try:
+    os.rename(target, dest)
+  except Exception as e:
+    print 'Error renaming %s to %s: %s' % (target, dest, str(e))
+    raise
 
 
 def ensure_no_checkout(dir_names):
@@ -315,6 +320,18 @@ def ensure_no_checkout(dir_names):
       print 'done'
 
 
+def call_gclient(*args, **kwargs):
+  """Run the "gclient.py" tool with the supplied arguments.
+
+  Args:
+    args: command-line arguments to pass to gclient.
+    kwargs: keyword arguments to pass to call.
+  """
+  cmd = [sys.executable, '-u', GCLIENT_PATH]
+  cmd.extend(args)
+  return call(*cmd, **kwargs)
+
+
 def gclient_configure(solutions, target_os, target_os_only, git_cache_dir):
   """Should do the same thing as gclient --spec='...'."""
   with codecs.open('.gclient', mode='w', encoding='utf-8') as f:
@@ -322,21 +339,23 @@ def gclient_configure(solutions, target_os, target_os_only, git_cache_dir):
         solutions, target_os, target_os_only, git_cache_dir))
 
 
-def gclient_sync(with_branch_heads, shallow):
+def gclient_sync(with_branch_heads, shallow, break_repo_locks):
   # We just need to allocate a filename.
   fd, gclient_output_file = tempfile.mkstemp(suffix='.json')
   os.close(fd)
-  gclient_bin = 'gclient.bat' if sys.platform.startswith('win') else 'gclient'
-  cmd = [gclient_bin, 'sync', '--verbose', '--reset', '--force',
+
+  args = ['sync', '--verbose', '--reset', '--force',
          '--ignore_locks', '--output-json', gclient_output_file,
          '--nohooks', '--noprehooks', '--delete_unversioned_trees']
   if with_branch_heads:
-    cmd += ['--with_branch_heads']
+    args += ['--with_branch_heads']
   if shallow:
-    cmd += ['--shallow']
+    args += ['--shallow']
+  if break_repo_locks:
+    args += ['--break_repo_locks']
 
   try:
-    call(*cmd, tries=1)
+    call_gclient(*args, tries=1)
   except SubprocessFailed as e:
     # Throw a GclientSyncFailed exception so we can catch this independently.
     raise GclientSyncFailed(e.message, e.code, e.output)
@@ -348,8 +367,7 @@ def gclient_sync(with_branch_heads, shallow):
 
 
 def gclient_revinfo():
-  gclient_bin = 'gclient.bat' if sys.platform.startswith('win') else 'gclient'
-  return call(gclient_bin, 'revinfo', '-a') or ''
+  return call_gclient('revinfo', '-a') or ''
 
 
 def create_manifest():
@@ -452,15 +470,34 @@ def force_revision(folder_name, revision):
     branch, revision = split_revision
 
   if revision and revision.upper() != 'HEAD':
-    git('checkout', '--force', revision, cwd=folder_name)
+    git('checkout', '--force', revision, cwd=folder_name, tries=1)
   else:
     ref = branch if branch.startswith('refs/') else 'origin/%s' % branch
-    git('checkout', '--force', ref, cwd=folder_name)
+    git('checkout', '--force', ref, cwd=folder_name, tries=1)
 
 
 def is_broken_repo_dir(repo_dir):
   # Treat absence of 'config' as a signal of a partially deleted repo.
   return not path.exists(os.path.join(repo_dir, '.git', 'config'))
+
+
+def _maybe_break_locks(checkout_path):
+  """This removes all .lock files from this repo's .git directory.
+
+  In particular, this will cleanup index.lock files, as well as ref lock
+  files.
+  """
+  git_dir = os.path.join(checkout_path, '.git')
+  for dirpath, _, filenames in os.walk(git_dir):
+    for filename in filenames:
+      if filename.endswith('.lock'):
+        to_break = os.path.join(dirpath, filename)
+        print 'breaking lock: %s' % to_break
+        try:
+          os.remove(to_break)
+        except OSError as ex:
+          print 'FAILED to break lock: %s: %s' % (to_break, ex)
+          raise
 
 
 def git_checkout(solutions, revisions, shallow, refs, git_cache_dir):
@@ -507,14 +544,27 @@ def git_checkout(solutions, revisions, shallow, refs, git_cache_dir):
           print 'Git repo %s appears to be broken, removing it' % sln_dir
           remove(sln_dir)
 
+        # Use "tries=1", since we retry manually in this loop.
         if not path.isdir(sln_dir):
-          git(*clone_cmd)
+          git(*clone_cmd, tries=1)
         else:
-          git('remote', 'set-url', 'origin', mirror_dir, cwd=sln_dir)
-          git('fetch', 'origin', cwd=sln_dir)
+          git('remote', 'set-url', 'origin', mirror_dir, cwd=sln_dir, tries=1)
+          git('fetch', 'origin', cwd=sln_dir, tries=1)
         for ref in refs:
           refspec = '%s:%s' % (ref, ref.lstrip('+'))
-          git('fetch', 'origin', refspec, cwd=sln_dir)
+          git('fetch', 'origin', refspec, cwd=sln_dir, tries=1)
+
+        # Windows sometimes has trouble deleting files.
+        # This can make git commands that rely on locks fail.
+        # Try a few times in case Windows has trouble again (and again).
+        if sys.platform.startswith('win'):
+          tries = 3
+          while tries:
+            try:
+              _maybe_break_locks(sln_dir)
+              break
+            except Exception:
+              tries -= 1
 
         revision = get_target_revision(name, url, revisions) or 'HEAD'
         force_revision(sln_dir, revision)
@@ -753,10 +803,14 @@ def ensure_checkout(solutions, revisions, first_sln, target_os, target_os_only,
   # Ensure our build/ directory is set up with the correct .gclient file.
   gclient_configure(solutions, target_os, target_os_only, git_cache_dir)
 
+  # Windows sometimes has trouble deleting files. This can make git commands
+  # that rely on locks fail.
+  break_repo_locks = True if sys.platform.startswith('win') else False
   # Let gclient do the DEPS syncing.
   # The branch-head refspec is a special case because its possible Chrome
   # src, which contains the branch-head refspecs, is DEPSed in.
-  gclient_output = gclient_sync(BRANCH_HEADS_REFSPEC in refs, shallow)
+  gclient_output = gclient_sync(BRANCH_HEADS_REFSPEC in refs, shallow,
+                                break_repo_locks)
 
   # Now that gclient_sync has finished, we should revert any .DEPS.git so that
   # presubmit doesn't complain about it being modified.

@@ -394,14 +394,25 @@ def chromium_webrtc(c):
 
 @config_ctx(includes=['chromium_webrtc'])
 def chromium_webrtc_tot(c):
-  """Configures ToT revisions for WebRTC and Libjingle for Chromium.
+  """Configures WebRTC ToT revision for Chromium src/third_party/webrtc.
 
-  Sets up ToT instead of the DEPS-pinned revision for WebRTC and Libjingle.
+  Sets up ToT instead of the DEPS-pinned revision for WebRTC.
   This is used for some bots to provide data about which revisions are green to
   roll into Chromium.
   """
   c.revisions['src'] = 'HEAD'
   c.revisions['src/third_party/webrtc'] = 'HEAD'
+
+  # Have the WebRTC revision appear in the web UI instead of Chromium's.
+  # This is also important for set_component_rev to work, since got_revision
+  # will become a WebRTC revision instead of Chromium.
+  c.got_revision_mapping['src'] = 'got_cr_revision'
+  c.got_revision_mapping['src/third_party/webrtc'] = 'got_revision'
+
+  # Needed to get the testers to properly sync the right revision.
+  c.parent_got_revision_mapping['parent_got_revision'] = 'got_revision'
+  c.parent_got_revision_mapping['parent_got_webrtc_revision'] = (
+      'got_webrtc_revision')
 
 @config_ctx()
 def webrtc_test_resources(c):
@@ -580,3 +591,8 @@ def chromedriver(c):
   c.solutions[0].custom_deps[
       'src/chrome/test/chromedriver/third_party/java_tests'] = (
           ChromiumGitURL(c, 'chromium', 'deps', 'webdriver'))
+
+@config_ctx()
+def ndk_next(c):
+  c.revisions['src/third_party/android_tools/ndk'] = 'origin/next'
+

@@ -5,8 +5,8 @@
 DEPS = [
   'bot_update',
   'gclient',
-  'recipe_engine/platform',
   'recipe_engine/path',
+  'recipe_engine/platform',
   'recipe_engine/properties',
 ]
 
@@ -63,6 +63,11 @@ def GenTests(api):
       patch=False,
       revision='abc'
   )
+  yield api.test('buildbot') + api.properties(
+      path_config='buildbot',
+      patch=False,
+      revision='abc'
+  )
   yield api.test('basic_with_branch_heads') + api.properties(
       with_branch_heads=True,
       suffix='with branch heads'
@@ -79,6 +84,10 @@ def GenTests(api):
       refs=['+refs/change/1/2/333'],
   )
   yield api.test('trychange_oauth2') + api.properties(
+      oauth2=True,
+  )
+  yield api.test('trychange_oauth2_buildbot') + api.properties(
+      path_config='buildbot',
       oauth2=True,
   )
   yield api.test('trychange_oauth2_json') + api.properties(
@@ -141,6 +150,22 @@ def GenTests(api):
   yield api.test('tryjob_v8_head_by_default') + api.properties.tryserver(
       patch_project='v8',
   )
-  yield api.test('tryjob_gerrit_angle') + api.properties.tryserver_gerrit(
-      full_project_name='angle/angle',
+  yield api.test('tryjob_gerrit_angle') + api.properties.tryserver(
+      gerrit_project='angle/angle',
+      patch_issue=338811,
+      patch_set=3,
+  )
+  yield api.test('tryjob_gerrit_angle_deprecated') + api.properties.tryserver(
+      patch_project='angle/angle',
+      gerrit='https://chromium-review.googlesource.com',
+      patch_storage='gerrit',
+      repository='https://chromium.googlesource.com/angle/angle',
+      rietveld=None,
+      **{
+        'event.change.id': 'angle%2Fangle~master~Ideadbeaf',
+        'event.change.number': 338811,
+        'event.change.url':
+          'https://chromium-review.googlesource.com/#/c/338811',
+        'event.patchSet.ref': 'refs/changes/11/338811/3',
+      }
   )

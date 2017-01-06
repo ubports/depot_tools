@@ -3,20 +3,22 @@
 # found in the LICENSE file.
 
 
-"""Recipe module to ensure a checkout is consistant on a bot."""
+"""Recipe module to ensure a checkout is consistent on a bot."""
 
 from recipe_engine import recipe_api
 
 
 class BotUpdateApi(recipe_api.RecipeApi):
 
-  def __init__(self, issue, patchset, repository, gerrit_ref, rietveld,
-               revision, parent_got_revision, deps_revision_overrides,
-               fail_patch, *args, **kwargs):
-    self._issue = issue
-    self._patchset = patchset
-    self._repository = repository
-    self._gerrit_ref = gerrit_ref
+  def __init__(self, issue, patch_issue, patchset, patch_set, patch_project,
+               repository, patch_repository_url, gerrit_ref, patch_ref,
+               patch_gerrit_url, rietveld, revision, parent_got_revision,
+               deps_revision_overrides, fail_patch, *args, **kwargs):
+    self._issue = issue or patch_issue
+    self._patchset = patchset or patch_set
+    self._repository = repository or patch_repository_url
+    self._gerrit_ref = gerrit_ref or patch_ref
+    self._gerrit = patch_gerrit_url
     self._rietveld = rietveld
     self._revision = revision
     self._parent_got_revision = parent_got_revision
@@ -42,8 +44,7 @@ class BotUpdateApi(recipe_api.RecipeApi):
       return self._last_returned_properties
 
   # DO NOT USE.
-  # The below method will be removed after there are no more callers of
-  # tryserver.maybe_apply_issue (skbug.com/5588).
+  # TODO(tandrii): refactor this into tryserver.maybe_apply_patch
   def apply_gerrit_ref(self, root, gerrit_no_reset=False,
                        gerrit_no_rebase_patch_ref=False, **kwargs):
     apply_gerrit_path = self.resource('apply_gerrit.py')
@@ -124,22 +125,33 @@ class BotUpdateApi(recipe_api.RecipeApi):
     if not gerrit_ref or not gerrit_repo:
       gerrit_repo = gerrit_ref = None
     assert (gerrit_ref != None) == (gerrit_repo != None)
+    if gerrit_ref:
+      # Gerrit patches have historically not specified issue and patchset.
+      # resourece/bot_update has as a result implicit assumption that set issue
+      # implies Rietveld patch.
+      # TODO(tandrii): fix this madness.
+      issue = patchset = None
 
     # Point to the oauth2 auth files if specified.
     # These paths are where the bots put their credential files.
     oauth2_json_file = email_file = key_file = None
     if oauth2_json:
       if self.m.platform.is_win:
-        oauth2_json_file = 'C:\\creds\\refresh_tokens\\rietveld.json'
+        oauth2_json_file = 'C:\\creds\\refresh_tokens\\internal-try'
       else:
-        oauth2_json_file = '/creds/refresh_tokens/rietveld.json'
+        oauth2_json_file = '/creds/refresh_tokens/internal-try'
     elif patch_oauth2:
       # TODO(martiniss): remove this hack :(. crbug.com/624212
       if use_site_config_creds:
-        email_file = self.m.path['build'].join(
-            'site_config', '.rietveld_client_email')
-        key_file = self.m.path['build'].join(
-            'site_config', '.rietveld_secret_key')
+        try:
+          build_path = self.m.path['build']
+        except KeyError:
+          raise self.m.step.StepFailure(
+              'build path is not defined. This is normal for LUCI builds. '
+              'In LUCI, use_site_config_creds parameter of '
+              'bot_update.ensure_checkout is not supported')
+        email_file = build_path.join('site_config', '.rietveld_client_email')
+        key_file = build_path.join('site_config', '.rietveld_secret_key')
       else: #pragma: no cover
         #TODO(martiniss): make this use path.join, so it works on windows
         email_file = '/creds/rietveld/client_email'
@@ -294,7 +306,7 @@ class BotUpdateApi(recipe_api.RecipeApi):
         # first solution.
         if step_result.json.output['did_run']:
           co_root = step_result.json.output['root']
-          cwd = kwargs.get('cwd', self.m.path['slave_build'])
+          cwd = kwargs.get('cwd', self.m.path['start_dir'])
           if 'checkout' not in self.m.path:
             self.m.path['checkout'] = cwd.join(*co_root.split(self.m.path.sep))
 

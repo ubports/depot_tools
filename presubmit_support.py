@@ -197,9 +197,16 @@ class GerritAccessor(object):
 
   def _FetchChangeDetail(self, issue):
     # Separate function to be easily mocked in tests.
-    return gerrit_util.GetChangeDetail(
-        self.host, str(issue),
-        ['ALL_REVISIONS', 'DETAILED_LABELS'])
+    try:
+      return gerrit_util.GetChangeDetail(
+          self.host, str(issue),
+          ['ALL_REVISIONS', 'DETAILED_LABELS'],
+          ignore_404=False)
+    except gerrit_util.GerritError as e:
+      if e.http_status == 404:
+        raise Exception('Either Gerrit issue %s doesn\'t exist, or '
+                        'no credentials to fetch issue details' % issue)
+      raise
 
   def GetChangeInfo(self, issue):
     """Returns labels and all revisions (patchsets) for this issue.
@@ -246,7 +253,7 @@ class GerritAccessor(object):
   def GetChangeReviewers(self, issue, approving_only=True):
     cr = self.GetChangeInfo(issue)['labels']['Code-Review']
     max_value = max(int(k) for k in cr['values'].keys())
-    return [r['email'] for r in cr['all']
+    return [r.get('email') for r in cr.get('all', [])
             if not approving_only or r.get('value', 0) == max_value]
 
 
@@ -275,7 +282,7 @@ class InputApi(object):
   know stuff about the change they're looking at.
   """
   # Method could be a function
-  # pylint: disable=R0201
+  # pylint: disable=no-self-use
 
   # File extensions that are considered source files from a style guide
   # perspective. Don't modify this list from a presubmit script!
@@ -394,7 +401,7 @@ class InputApi(object):
     # Replace <hash_map> and <hash_set> as headers that need to be included
     # with "base/containers/hash_tables.h" instead.
     # Access to a protected member _XX of a client class
-    # pylint: disable=W0212
+    # pylint: disable=protected-access
     self.cpplint._re_pattern_templates = [
       (a, b, 'base/containers/hash_tables.h')
         if header in ('<hash_map>', '<hash_set>') else (a, b, header)
@@ -411,35 +418,7 @@ class InputApi(object):
     """
     return self._current_presubmit_path
 
-  def DepotToLocalPath(self, depot_path):
-    """Translate a depot path to a local path (relative to client root).
-
-    Args:
-      Depot path as a string.
-
-    Returns:
-      The local path of the depot path under the user's current client, or None
-      if the file is not mapped.
-
-      Remember to check for the None case and show an appropriate error!
-    """
-    return scm.SVN.CaptureLocalInfo([depot_path], self.change.RepositoryRoot()
-        ).get('Path')
-
-  def LocalToDepotPath(self, local_path):
-    """Translate a local path to a depot path.
-
-    Args:
-      Local path (relative to current directory, or absolute) as a string.
-
-    Returns:
-      The depot path (SVN URL) of the file if mapped, otherwise None.
-    """
-    return scm.SVN.CaptureLocalInfo([local_path], self.change.RepositoryRoot()
-        ).get('URL')
-
-  def AffectedFiles(self, include_dirs=False, include_deletes=True,
-                    file_filter=None):
+  def AffectedFiles(self, include_deletes=True, file_filter=None):
     """Same as input_api.change.AffectedFiles() except only lists files
     (and optionally directories) in the same directory as the current presubmit
     script, or subdirectories thereof.
@@ -450,34 +429,34 @@ class InputApi(object):
 
     return filter(
         lambda x: normpath(x.AbsoluteLocalPath()).startswith(dir_with_slash),
-        self.change.AffectedFiles(include_dirs, include_deletes, file_filter))
+        self.change.AffectedFiles(include_deletes, file_filter))
 
-  def LocalPaths(self, include_dirs=False):
+  def LocalPaths(self):
     """Returns local paths of input_api.AffectedFiles()."""
-    paths = [af.LocalPath() for af in self.AffectedFiles(include_dirs)]
+    paths = [af.LocalPath() for af in self.AffectedFiles()]
     logging.debug("LocalPaths: %s", paths)
     return paths
 
-  def AbsoluteLocalPaths(self, include_dirs=False):
+  def AbsoluteLocalPaths(self):
     """Returns absolute local paths of input_api.AffectedFiles()."""
-    return [af.AbsoluteLocalPath() for af in self.AffectedFiles(include_dirs)]
+    return [af.AbsoluteLocalPath() for af in self.AffectedFiles()]
 
-  def ServerPaths(self, include_dirs=False):
-    """Returns server paths of input_api.AffectedFiles()."""
-    return [af.ServerPath() for af in self.AffectedFiles(include_dirs)]
-
-  def AffectedTextFiles(self, include_deletes=None):
-    """Same as input_api.change.AffectedTextFiles() except only lists files
+  def AffectedTestableFiles(self, include_deletes=None):
+    """Same as input_api.change.AffectedTestableFiles() except only lists files
     in the same directory as the current presubmit script, or subdirectories
     thereof.
     """
     if include_deletes is not None:
-      warn("AffectedTextFiles(include_deletes=%s)"
+      warn("AffectedTestableFiles(include_deletes=%s)"
                " is deprecated and ignored" % str(include_deletes),
            category=DeprecationWarning,
            stacklevel=2)
-    return filter(lambda x: x.IsTextFile(),
-                  self.AffectedFiles(include_dirs=False, include_deletes=False))
+    return filter(lambda x: x.IsTestableFile(),
+                  self.AffectedFiles(include_deletes=False))
+
+  def AffectedTextFiles(self, include_deletes=None):
+    """An alias to AffectedTestableFiles for backwards compatibility."""
+    return self.AffectedTestableFiles(include_deletes=include_deletes)
 
   def FilterSourceFile(self, affected_file, white_list=None, black_list=None):
     """Filters out files that aren't considered "source file".
@@ -500,13 +479,13 @@ class InputApi(object):
             not Find(affected_file, black_list or self.DEFAULT_BLACK_LIST))
 
   def AffectedSourceFiles(self, source_file):
-    """Filter the list of AffectedTextFiles by the function source_file.
+    """Filter the list of AffectedTestableFiles by the function source_file.
 
     If source_file is None, InputApi.FilterSourceFile() is used.
     """
     if not source_file:
       source_file = self.FilterSourceFile
-    return filter(source_file, self.AffectedTextFiles())
+    return filter(source_file, self.AffectedTestableFiles())
 
   def RightHandSideLines(self, source_file_filter=None):
     """An iterator over all text lines in "new" version of changed files.
@@ -579,19 +558,6 @@ class _DiffCache(object):
     raise NotImplementedError()
 
 
-class _SvnDiffCache(_DiffCache):
-  """DiffCache implementation for subversion."""
-  def __init__(self, *args, **kwargs):
-    super(_SvnDiffCache, self).__init__(*args, **kwargs)
-    self._diffs_by_file = {}
-
-  def GetDiff(self, path, local_root):
-    if path not in self._diffs_by_file:
-      self._diffs_by_file[path] = scm.SVN.GenerateDiff([path], local_root,
-                                                       False, None)
-    return self._diffs_by_file[path]
-
-
 class _GitDiffCache(_DiffCache):
   """DiffCache implementation for git; gets all file diffs at once."""
   def __init__(self, upstream):
@@ -640,24 +606,16 @@ class AffectedFile(object):
   DIFF_CACHE = _DiffCache
 
   # Method could be a function
-  # pylint: disable=R0201
+  # pylint: disable=no-self-use
   def __init__(self, path, action, repository_root, diff_cache):
     self._path = path
     self._action = action
     self._local_root = repository_root
     self._is_directory = None
-    self._properties = {}
     self._cached_changed_contents = None
     self._cached_new_contents = None
     self._diff_cache = diff_cache
     logging.debug('%s(%s)', self.__class__.__name__, self._path)
-
-  def ServerPath(self):
-    """Returns a path string that identifies the file in the SCM system.
-
-    Returns the empty string if the file does not exist in SCM.
-    """
-    return ''
 
   def LocalPath(self):
     """Returns the path of this file on the local disk relative to client root.
@@ -669,31 +627,21 @@ class AffectedFile(object):
     """
     return os.path.abspath(os.path.join(self._local_root, self.LocalPath()))
 
-  def IsDirectory(self):
-    """Returns true if this object is a directory."""
-    if self._is_directory is None:
-      path = self.AbsoluteLocalPath()
-      self._is_directory = (os.path.exists(path) and
-                            os.path.isdir(path))
-    return self._is_directory
-
   def Action(self):
     """Returns the action on this opened file, e.g. A, M, D, etc."""
     # TODO(maruel): Somewhat crappy, Could be "A" or "A  +" for svn but
     # different for other SCM.
     return self._action
 
-  def Property(self, property_name):
-    """Returns the specified SCM property of this file, or None if no such
-    property.
-    """
-    return self._properties.get(property_name, None)
-
-  def IsTextFile(self):
+  def IsTestableFile(self):
     """Returns True if the file is a text file and not a binary file.
 
     Deleted files are not text file."""
     raise NotImplementedError()  # Implement when needed
+
+  def IsTextFile(self):
+    """An alias to IsTestableFile for backwards compatibility."""
+    return self.IsTestableFile()
 
   def NewContents(self):
     """Returns an iterator over the lines in the new version of file.
@@ -706,12 +654,11 @@ class AffectedFile(object):
     """
     if self._cached_new_contents is None:
       self._cached_new_contents = []
-      if not self.IsDirectory():
-        try:
-          self._cached_new_contents = gclient_utils.FileRead(
-              self.AbsoluteLocalPath(), 'rU').splitlines()
-        except IOError:
-          pass  # File not found?  That's fine; maybe it was deleted.
+      try:
+        self._cached_new_contents = gclient_utils.FileRead(
+            self.AbsoluteLocalPath(), 'rU').splitlines()
+      except IOError:
+        pass  # File not found?  That's fine; maybe it was deleted.
     return self._cached_new_contents[:]
 
   def ChangedContents(self):
@@ -726,9 +673,6 @@ class AffectedFile(object):
       return self._cached_changed_contents[:]
     self._cached_changed_contents = []
     line_num = 0
-
-    if self.IsDirectory():
-      return []
 
     for line in self.GenerateScmDiff().splitlines():
       m = re.match(r'^@@ [0-9\,\+\-]+ \+([0-9]+)\,[0-9]+ @@', line)
@@ -748,100 +692,26 @@ class AffectedFile(object):
     return self._diff_cache.GetDiff(self.LocalPath(), self._local_root)
 
 
-class SvnAffectedFile(AffectedFile):
-  """Representation of a file in a change out of a Subversion checkout."""
-  # Method 'NNN' is abstract in class 'NNN' but is not overridden
-  # pylint: disable=W0223
-
-  DIFF_CACHE = _SvnDiffCache
-
-  def __init__(self, *args, **kwargs):
-    AffectedFile.__init__(self, *args, **kwargs)
-    self._server_path = None
-    self._is_text_file = None
-
-  def ServerPath(self):
-    if self._server_path is None:
-      self._server_path = scm.SVN.CaptureLocalInfo(
-          [self.LocalPath()], self._local_root).get('URL', '')
-    return self._server_path
-
-  def IsDirectory(self):
-    if self._is_directory is None:
-      path = self.AbsoluteLocalPath()
-      if os.path.exists(path):
-        # Retrieve directly from the file system; it is much faster than
-        # querying subversion, especially on Windows.
-        self._is_directory = os.path.isdir(path)
-      else:
-        self._is_directory = scm.SVN.CaptureLocalInfo(
-            [self.LocalPath()], self._local_root
-            ).get('Node Kind') in ('dir', 'directory')
-    return self._is_directory
-
-  def Property(self, property_name):
-    if not property_name in self._properties:
-      self._properties[property_name] = scm.SVN.GetFileProperty(
-          self.LocalPath(), property_name, self._local_root).rstrip()
-    return self._properties[property_name]
-
-  def IsTextFile(self):
-    if self._is_text_file is None:
-      if self.Action() == 'D':
-        # A deleted file is not a text file.
-        self._is_text_file = False
-      elif self.IsDirectory():
-        self._is_text_file = False
-      else:
-        mime_type = scm.SVN.GetFileProperty(
-            self.LocalPath(), 'svn:mime-type', self._local_root)
-        self._is_text_file = (not mime_type or mime_type.startswith('text/'))
-    return self._is_text_file
-
-
 class GitAffectedFile(AffectedFile):
   """Representation of a file in a change out of a git checkout."""
   # Method 'NNN' is abstract in class 'NNN' but is not overridden
-  # pylint: disable=W0223
+  # pylint: disable=abstract-method
 
   DIFF_CACHE = _GitDiffCache
 
   def __init__(self, *args, **kwargs):
     AffectedFile.__init__(self, *args, **kwargs)
     self._server_path = None
-    self._is_text_file = None
+    self._is_testable_file = None
 
-  def ServerPath(self):
-    if self._server_path is None:
-      raise NotImplementedError('TODO(maruel) Implement.')
-    return self._server_path
-
-  def IsDirectory(self):
-    if self._is_directory is None:
-      path = self.AbsoluteLocalPath()
-      if os.path.exists(path):
-        # Retrieve directly from the file system; it is much faster than
-        # querying subversion, especially on Windows.
-        self._is_directory = os.path.isdir(path)
-      else:
-        self._is_directory = False
-    return self._is_directory
-
-  def Property(self, property_name):
-    if not property_name in self._properties:
-      raise NotImplementedError('TODO(maruel) Implement.')
-    return self._properties[property_name]
-
-  def IsTextFile(self):
-    if self._is_text_file is None:
+  def IsTestableFile(self):
+    if self._is_testable_file is None:
       if self.Action() == 'D':
-        # A deleted file is not a text file.
-        self._is_text_file = False
-      elif self.IsDirectory():
-        self._is_text_file = False
+        # A deleted file is not testable.
+        self._is_testable_file = False
       else:
-        self._is_text_file = os.path.isfile(self.AbsoluteLocalPath())
-    return self._is_text_file
+        self._is_testable_file = os.path.isfile(self.AbsoluteLocalPath())
+    return self._is_testable_file
 
 
 class Change(object):
@@ -943,51 +813,44 @@ class Change(object):
     """List all files under source control in the repo."""
     raise NotImplementedError()
 
-  def AffectedFiles(self, include_dirs=False, include_deletes=True,
-                    file_filter=None):
+  def AffectedFiles(self, include_deletes=True, file_filter=None):
     """Returns a list of AffectedFile instances for all files in the change.
 
     Args:
       include_deletes: If false, deleted files will be filtered out.
-      include_dirs: True to include directories in the list
       file_filter: An additional filter to apply.
 
     Returns:
       [AffectedFile(path, action), AffectedFile(path, action)]
     """
-    if include_dirs:
-      affected = self._affected_files
-    else:
-      affected = filter(lambda x: not x.IsDirectory(), self._affected_files)
-
-    affected = filter(file_filter, affected)
+    affected = filter(file_filter, self._affected_files)
 
     if include_deletes:
       return affected
     else:
       return filter(lambda x: x.Action() != 'D', affected)
 
-  def AffectedTextFiles(self, include_deletes=None):
+  def AffectedTestableFiles(self, include_deletes=None):
     """Return a list of the existing text files in a change."""
     if include_deletes is not None:
-      warn("AffectedTextFiles(include_deletes=%s)"
+      warn("AffectedTeestableFiles(include_deletes=%s)"
                " is deprecated and ignored" % str(include_deletes),
            category=DeprecationWarning,
            stacklevel=2)
-    return filter(lambda x: x.IsTextFile(),
-                  self.AffectedFiles(include_dirs=False, include_deletes=False))
+    return filter(lambda x: x.IsTestableFile(),
+                  self.AffectedFiles(include_deletes=False))
 
-  def LocalPaths(self, include_dirs=False):
-    """Convenience function."""
-    return [af.LocalPath() for af in self.AffectedFiles(include_dirs)]
+  def AffectedTextFiles(self, include_deletes=None):
+    """An alias to AffectedTestableFiles for backwards compatibility."""
+    return self.AffectedTestableFiles(include_deletes=include_deletes)
 
-  def AbsoluteLocalPaths(self, include_dirs=False):
+  def LocalPaths(self):
     """Convenience function."""
-    return [af.AbsoluteLocalPath() for af in self.AffectedFiles(include_dirs)]
+    return [af.LocalPath() for af in self.AffectedFiles()]
 
-  def ServerPaths(self, include_dirs=False):
+  def AbsoluteLocalPaths(self):
     """Convenience function."""
-    return [af.ServerPath() for af in self.AffectedFiles(include_dirs)]
+    return [af.AbsoluteLocalPath() for af in self.AffectedFiles()]
 
   def RightHandSideLines(self):
     """An iterator over all text lines in "new" version of changed files.
@@ -1005,19 +868,7 @@ class Change(object):
     """
     return _RightHandSideLinesImpl(
         x for x in self.AffectedFiles(include_deletes=False)
-        if x.IsTextFile())
-
-
-class SvnChange(Change):
-  _AFFECTED_FILES = SvnAffectedFile
-  scm = 'svn'
-  _changelists = None
-
-  def AllFiles(self, root=None):
-    """List all files under source control in the repo."""
-    root = root or self.RepositoryRoot()
-    return subprocess.check_output(
-        ['svn', 'ls', '-R', '.'], cwd=root).splitlines()
+        if x.IsTestableFile())
 
 
 class GitChange(Change):
@@ -1084,83 +935,6 @@ def ListRelevantPresubmitFiles(files, root):
   return results
 
 
-class GetTrySlavesExecuter(object):
-  @staticmethod
-  def ExecPresubmitScript(script_text, presubmit_path, project, change):
-    """Executes GetPreferredTrySlaves() from a single presubmit script.
-
-    This will soon be deprecated and replaced by GetPreferredTryMasters().
-
-    Args:
-      script_text: The text of the presubmit script.
-      presubmit_path: Project script to run.
-      project: Project name to pass to presubmit script for bot selection.
-
-    Return:
-      A list of try slaves.
-    """
-    context = {}
-    main_path = os.getcwd()
-    try:
-      os.chdir(os.path.dirname(presubmit_path))
-      exec script_text in context
-    except Exception, e:
-      raise PresubmitFailure('"%s" had an exception.\n%s' % (presubmit_path, e))
-    finally:
-      os.chdir(main_path)
-
-    function_name = 'GetPreferredTrySlaves'
-    if function_name in context:
-      get_preferred_try_slaves = context[function_name]
-      function_info = inspect.getargspec(get_preferred_try_slaves)
-      if len(function_info[0]) == 1:
-        result = get_preferred_try_slaves(project)
-      elif len(function_info[0]) == 2:
-        result = get_preferred_try_slaves(project, change)
-      else:
-        result = get_preferred_try_slaves()
-      if not isinstance(result, types.ListType):
-        raise PresubmitFailure(
-            'Presubmit functions must return a list, got a %s instead: %s' %
-            (type(result), str(result)))
-      for item in result:
-        if isinstance(item, basestring):
-          # Old-style ['bot'] format.
-          botname = item
-        elif isinstance(item, tuple):
-          # New-style [('bot', set(['tests']))] format.
-          botname = item[0]
-        else:
-          raise PresubmitFailure('PRESUBMIT.py returned invalid tryslave/test'
-                                 ' format.')
-
-        if botname != botname.strip():
-          raise PresubmitFailure(
-              'Try slave names cannot start/end with whitespace')
-        if ',' in botname:
-          raise PresubmitFailure(
-              'Do not use \',\' separated builder or test names: %s' % botname)
-    else:
-      result = []
-
-    def valid_oldstyle(result):
-      return all(isinstance(i, basestring) for i in result)
-
-    def valid_newstyle(result):
-      return (all(isinstance(i, tuple) for i in result) and
-              all(len(i) == 2 for i in result) and
-              all(isinstance(i[0], basestring) for i in result) and
-              all(isinstance(i[1], set) for i in result)
-             )
-
-    # Ensure it's either all old-style or all new-style.
-    if not valid_oldstyle(result) and not valid_newstyle(result):
-      raise PresubmitFailure(
-          'PRESUBMIT.py returned invalid trybot specification!')
-
-    return result
-
-
 class GetTryMastersExecuter(object):
   @staticmethod
   def ExecPresubmitScript(script_text, presubmit_path, project, change):
@@ -1220,64 +994,6 @@ class GetPostUploadExecuter(object):
       raise PresubmitFailure(
           'Expected function "PostUploadHook" to take three arguments.')
     return post_upload_hook(cl, change, OutputApi(False))
-
-
-def DoGetTrySlaves(change,
-                   changed_files,
-                   repository_root,
-                   default_presubmit,
-                   project,
-                   verbose,
-                   output_stream):
-  """Get the list of try servers from the presubmit scripts (deprecated).
-
-  Args:
-    changed_files: List of modified files.
-    repository_root: The repository root.
-    default_presubmit: A default presubmit script to execute in any case.
-    project: Optional name of a project used in selecting trybots.
-    verbose: Prints debug info.
-    output_stream: A stream to write debug output to.
-
-  Return:
-    List of try slaves
-  """
-  presubmit_files = ListRelevantPresubmitFiles(changed_files, repository_root)
-  if not presubmit_files and verbose:
-    output_stream.write("Warning, no PRESUBMIT.py found.\n")
-  results = []
-  executer = GetTrySlavesExecuter()
-
-  if default_presubmit:
-    if verbose:
-      output_stream.write("Running default presubmit script.\n")
-    fake_path = os.path.join(repository_root, 'PRESUBMIT.py')
-    results.extend(executer.ExecPresubmitScript(
-        default_presubmit, fake_path, project, change))
-  for filename in presubmit_files:
-    filename = os.path.abspath(filename)
-    if verbose:
-      output_stream.write("Running %s\n" % filename)
-    # Accept CRLF presubmit script.
-    presubmit_script = gclient_utils.FileRead(filename, 'rU')
-    results.extend(executer.ExecPresubmitScript(
-        presubmit_script, filename, project, change))
-
-
-  slave_dict = {}
-  old_style = filter(lambda x: isinstance(x, basestring), results)
-  new_style = filter(lambda x: isinstance(x, tuple), results)
-
-  for result in new_style:
-    slave_dict.setdefault(result[0], set()).update(result[1])
-  slaves = list(slave_dict.items())
-
-  slaves.extend(set(old_style))
-
-  if slaves and verbose:
-    output_stream.write(', '.join((str(x) for x in slaves)))
-    output_stream.write('\n')
-  return slaves
 
 
 def _MergeMasters(masters1, masters2):
@@ -1458,7 +1174,6 @@ class PresubmitExecuter(object):
     os.chdir(main_path)
     return result
 
-
 def DoPresubmitChecks(change,
                       committing,
                       verbose,
@@ -1485,7 +1200,8 @@ def DoPresubmitChecks(change,
     output_stream: A stream to write output from presubmit tests to.
     input_stream: A stream to read input from the user.
     default_presubmit: A default presubmit script to execute in any case.
-    may_prompt: Enable (y/n) questions on warning or error.
+    may_prompt: Enable (y/n) questions on warning or error. If False,
+                any questions are answered with yes by default.
     rietveld_obj: rietveld.Rietveld object.
     gerrit_obj: provides basic Gerrit codereview functionality.
     dry_run: if true, some Checks will be skipped.
@@ -1511,7 +1227,7 @@ def DoPresubmitChecks(change,
       output.write("Running presubmit upload checks ...\n")
     start_time = time.time()
     presubmit_files = ListRelevantPresubmitFiles(
-        change.AbsoluteLocalPaths(True), change.RepositoryRoot())
+        change.AbsoluteLocalPaths(), change.RepositoryRoot())
     if not presubmit_files and verbose:
       output.write("Warning, no PRESUBMIT.py found.\n")
     results = []
@@ -1555,14 +1271,14 @@ def DoPresubmitChecks(change,
     if total_time > 1.0:
       output.write("Presubmit checks took %.1fs to calculate.\n\n" % total_time)
 
-    if not errors:
-      if not warnings:
-        output.write('Presubmit checks passed.\n')
-      elif may_prompt:
-        output.prompt_yes_no('There were presubmit warnings. '
-                            'Are you sure you wish to continue? (y/N): ')
-      else:
-        output.fail()
+    if errors:
+      output.fail()
+    elif warnings:
+      output.write('There were presubmit warnings. ')
+      if may_prompt:
+        output.prompt_yes_no('Are you sure you wish to continue? (y/N): ')
+    else:
+      output.write('Presubmit checks passed.\n')
 
     global _ASKED_FOR_FEEDBACK
     # Ask for feedback one time out of 5.
@@ -1603,15 +1319,11 @@ def ParseFiles(args, recursive):
 
 def load_files(options, args):
   """Tries to determine the SCM."""
-  change_scm = scm.determine_scm(options.root)
   files = []
   if args:
     files = ParseFiles(args, options.recursive)
-  if change_scm == 'svn':
-    change_class = SvnChange
-    if not files:
-      files = scm.SVN.CaptureStatus([], options.root)
-  elif change_scm == 'git':
+  change_scm = scm.determine_scm(options.root)
+  if change_scm == 'git':
     change_class = GitChange
     upstream = options.upstream or None
     if not files:

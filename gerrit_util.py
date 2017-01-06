@@ -9,6 +9,7 @@ https://gerrit-review.googlesource.com/Documentation/rest-api.html
 """
 
 import base64
+import contextlib
 import cookielib
 import httplib
 import json
@@ -16,14 +17,17 @@ import logging
 import netrc
 import os
 import re
+import shutil
 import socket
 import stat
 import sys
+import tempfile
 import time
 import urllib
 import urlparse
 from cStringIO import StringIO
 
+import gclient_utils
 
 LOGGER = logging.getLogger()
 TRY_LIMIT = 5
@@ -32,6 +36,7 @@ TRY_LIMIT = 5
 # Controls the transport protocol used to communicate with gerrit.
 # This is parameterized primarily to enable GerritTestCase.
 GERRIT_PROTOCOL = 'https'
+
 
 
 class GerritError(Exception):
@@ -113,30 +118,46 @@ class CookiesAuthenticator(Authenticator):
 
   @classmethod
   def _get_netrc(cls):
+    # Buffer the '.netrc' path. Use an empty file if it doesn't exist.
     path = cls.get_netrc_path()
-    if not os.path.exists(path):
-      return netrc.netrc(os.devnull)
-
-    try:
-      return netrc.netrc(path)
-    except IOError:
-      print >> sys.stderr, 'WARNING: Could not read netrc file %s' % path
-      return netrc.netrc(os.devnull)
-    except netrc.NetrcParseError:
+    content = ''
+    if os.path.exists(path):
       st = os.stat(path)
       if st.st_mode & (stat.S_IRWXG | stat.S_IRWXO):
         print >> sys.stderr, (
             'WARNING: netrc file %s cannot be used because its file '
             'permissions are insecure.  netrc file permissions should be '
             '600.' % path)
-      else:
-        print >> sys.stderr, ('ERROR: Cannot use netrc file %s due to a '
-                              'parsing error.' % path)
-        raise
+      with open(path) as fd:
+        content = fd.read()
+
+    # Load the '.netrc' file. We strip comments from it because processing them
+    # can trigger a bug in Windows. See crbug.com/664664.
+    content = '\n'.join(l for l in content.splitlines()
+                        if l.strip() and not l.strip().startswith('#'))
+    with tempdir() as tdir:
+      netrc_path = os.path.join(tdir, 'netrc')
+      with open(netrc_path, 'w') as fd:
+        fd.write(content)
+      os.chmod(netrc_path, (stat.S_IRUSR | stat.S_IWUSR))
+      return cls._get_netrc_from_path(netrc_path)
+
+  @classmethod
+  def _get_netrc_from_path(cls, path):
+    try:
+      return netrc.netrc(path)
+    except IOError:
+      print >> sys.stderr, 'WARNING: Could not read netrc file %s' % path
+      return netrc.netrc(os.devnull)
+    except netrc.NetrcParseError as e:
+      print >> sys.stderr, ('ERROR: Cannot use netrc file %s due to a '
+                            'parsing error: %s' % (path, e))
       return netrc.netrc(os.devnull)
 
   @classmethod
   def get_gitcookies_path(cls):
+    if os.getenv('GIT_COOKIES_PATH'):
+      return os.getenv('GIT_COOKIES_PATH')
     return os.path.join(os.environ['HOME'], '.gitcookies')
 
   @classmethod
@@ -199,6 +220,8 @@ class GceAuthenticator(Authenticator):
 
   @classmethod
   def is_gce(cls):
+    if os.getenv('SKIP_GCE_AUTH_FOR_GIT'):
+      return False
     if cls._cache_is_gce is None:
       cls._cache_is_gce = cls._test_is_gce()
     return cls._cache_is_gce
@@ -266,10 +289,11 @@ def CreateHttpConn(host, path, reqtype='GET', headers=None, body=None):
   else:
     LOGGER.debug('No authorization found for %s.' % bare_host)
 
-  if 'Authorization' in headers and not path.startswith('a/'):
-    url = '/a/%s' % path
-  else:
-    url = '/%s' % path
+  url = path
+  if not url.startswith('/'):
+    url = '/' + url
+  if 'Authorization' in headers and not url.startswith('/a/'):
+    url = '/a%s' % url
 
   if body:
     body = json.JSONEncoder().encode(body)
@@ -475,11 +499,18 @@ def GetChange(host, change):
   return ReadHttpJsonResponse(CreateHttpConn(host, path))
 
 
-def GetChangeDetail(host, change, o_params=None):
+def GetChangeDetail(host, change, o_params=None, ignore_404=True):
   """Query a gerrit server for extended information about a single change."""
+  # TODO(tandrii): cahnge ignore_404 to False by default.
   path = 'changes/%s/detail' % change
   if o_params:
     path += '?%s' % '&'.join(['o=%s' % p for p in o_params])
+  return ReadHttpJsonResponse(CreateHttpConn(host, path), ignore_404=ignore_404)
+
+
+def GetChangeCommit(host, change, revision='current'):
+  """Query a gerrit server for a revision associated with a change."""
+  path = 'changes/%s/revisions/%s/commit?links' % (change, revision)
   return ReadHttpJsonResponse(CreateHttpConn(host, path))
 
 
@@ -569,36 +600,48 @@ def DeletePendingChangeEdit(host, change):
       raise
 
 
-def SetCommitMessage(host, change, description):
+def SetCommitMessage(host, change, description, notify='ALL'):
   """Updates a commit message."""
-  # First, edit the commit message in a draft.
-  path = 'changes/%s/edit:message' % change
-  body = {'message': description}
-  conn = CreateHttpConn(host, path, reqtype='PUT', body=body)
   try:
-    ReadHttpResponse(conn, ignore_404=False)
-  except GerritError as e:
-    # On success, gerrit returns status 204; anything else is an error.
-    if e.http_status != 204:
-      raise
-  else:
-    raise GerritError(
-        'Unexpectedly received a 200 http status while editing message in '
-        'change %s' % change)
+    assert notify in ('ALL', 'NONE')
+    # First, edit the commit message in a draft.
+    path = 'changes/%s/edit:message' % change
+    body = {'message': description}
+    conn = CreateHttpConn(host, path, reqtype='PUT', body=body)
+    try:
+      ReadHttpResponse(conn, ignore_404=False)
+    except GerritError as e:
+      # On success, gerrit returns status 204; anything else is an error.
+      if e.http_status != 204:
+        raise
+    else:
+      raise GerritError(
+          'Unexpectedly received a 200 http status while editing message in '
+          'change %s' % change)
 
-  # And then publish it.
-  path = 'changes/%s/edit:publish' % change
-  conn = CreateHttpConn(host, path, reqtype='POST', body={})
-  try:
-    ReadHttpResponse(conn, ignore_404=False)
-  except GerritError as e:
-    # On success, gerrit returns status 204; anything else is an error.
-    if e.http_status != 204:
-      raise
-  else:
-    raise GerritError(
-        'Unexpectedly received a 200 http status while publishing message '
-        'change in %s' % change)
+    # And then publish it.
+    path = 'changes/%s/edit:publish' % change
+    conn = CreateHttpConn(host, path, reqtype='POST', body={'notify': notify})
+    try:
+      ReadHttpResponse(conn, ignore_404=False)
+    except GerritError as e:
+      # On success, gerrit returns status 204; anything else is an error.
+      if e.http_status != 204:
+        raise
+    else:
+      raise GerritError(
+          'Unexpectedly received a 200 http status while publishing message '
+          'change in %s' % change)
+  except (GerritError, KeyboardInterrupt) as e:
+    # Something went wrong with one of the two calls, so we want to clean up
+    # after ourselves before returning.
+    try:
+      DeletePendingChangeEdit(host, change)
+    except GerritError:
+      LOGGER.error('Encountered error while cleaning up after failed attempt '
+                   'to set the CL description. You may have to delete the '
+                   'pending change edit yourself in the web UI.')
+    raise e
 
 
 def GetReviewers(host, change):
@@ -615,19 +658,28 @@ def GetReview(host, change, revision):
 
 def AddReviewers(host, change, add=None, is_reviewer=True):
   """Add reviewers to a change."""
+  errors = None
   if not add:
-    return
+    return None
   if isinstance(add, basestring):
     add = (add,)
   path = 'changes/%s/reviewers' % change
   for r in add:
+    state = 'REVIEWER' if is_reviewer else 'CC'
     body = {
       'reviewer': r,
-      'state': 'REVIEWER' if is_reviewer else 'CC',
+      'state': state,
     }
-    conn = CreateHttpConn(host, path, reqtype='POST', body=body)
-    jmsg = ReadHttpJsonResponse(conn, ignore_404=False)
-  return jmsg
+    try:
+      conn = CreateHttpConn(host, path, reqtype='POST', body=body)
+      _ = ReadHttpJsonResponse(conn, ignore_404=False)
+    except GerritError as e:
+      if e.http_status == 422:  # "Unprocessable Entity"
+        LOGGER.warn('Failed to add "%s" as a %s' % (r, state.lower()))
+        errors = True
+      else:
+        raise
+  return errors
 
 
 def RemoveReviewers(host, change, remove=None):
@@ -716,3 +768,14 @@ def ResetReviewLabels(host, change, label, value='0', message=None,
   elif jmsg[0]['current_revision'] != revision:
     raise GerritError(200, 'While resetting labels on change "%s", '
                    'a new patchset was uploaded.' % change)
+
+
+@contextlib.contextmanager
+def tempdir():
+  tdir = None
+  try:
+    tdir = tempfile.mkdtemp(suffix='gerrit_util')
+    yield tdir
+  finally:
+    if tdir:
+      gclient_utils.rmtree(tdir)

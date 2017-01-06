@@ -65,24 +65,27 @@ class RietveldApi(recipe_api.RecipeApi):
     issue_number = self.m.properties['issue']
 
     if authentication == 'oauth2':
+      try:
+        build_path = self.m.path['build']
+      except KeyError:
+        raise self.m.step.StepFailure(
+          'build path is not defined. This is typical for LUCI builds. '
+          'LUCI does not support rietveld.apply_issue; use bot_update instead')
       step_result = self.m.python(
         'apply_issue',
-        self.m.path['depot_tools'].join('apply_issue.py'), [
+        self.package_repo_resource('apply_issue.py'), [
           '-r', self.m.path['checkout'].join(*root_pieces),
           '-i', issue_number,
           '-p', self.m.properties['patchset'],
           '-s', rietveld_url,
-          '-E', self.m.path['build'].join('site_config',
-                                          '.rietveld_client_email'),
-          '-k', self.m.path['build'].join('site_config',
-                                          '.rietveld_secret_key')
-          ],
-        )
-
+          '-E', build_path.join('site_config', '.rietveld_client_email'),
+          '-k', build_path.join('site_config', '.rietveld_secret_key'),
+        ],
+      )
     else:
       step_result = self.m.python(
         'apply_issue',
-        self.m.path['depot_tools'].join('apply_issue.py'), [
+        self.package_repo_resource('apply_issue.py'), [
           '-r', self.m.path['checkout'].join(*root_pieces),
           '-i', issue_number,
           '-p', self.m.properties['patchset'],

@@ -11,14 +11,20 @@ DEPS = [
 ]
 
 def RunSteps(api):
-  api.path['checkout'] = api.path['slave_build']
+  api.path['checkout'] = api.path['start_dir']
   api.rietveld.apply_issue('foo', 'bar', authentication='oauth2')
   api.rietveld.calculate_issue_root({'project': ['']})
 
 
 def GenTests(api):
-  yield (api.test('basic')
-         + api.properties(issue=1,
-                          patchset=1,
-                          rietveld='http://review_tool.url')
-         )
+  yield api.test('basic') + api.properties(
+      issue=1,
+      patchset=1,
+      rietveld='http://review_tool.url',
+  )
+  yield api.test('buildbot') + api.properties(
+      path_config='buildbot',
+      issue=1,
+      patchset=1,
+      rietveld='http://review_tool.url',
+  )

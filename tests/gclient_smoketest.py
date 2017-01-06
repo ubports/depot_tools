@@ -52,7 +52,6 @@ class GClientSmokeBase(fake_repos.FakeReposTestBase):
     (stdout, stderr) = process.communicate()
     logging.debug("XXX: %s\n%s\nXXX" % (' '.join(cmd), stdout))
     logging.debug("YYY: %s\n%s\nYYY" % (' '.join(cmd), stderr))
-    # pylint: disable=E1103
     return (stdout.replace('\r\n', '\n'), stderr.replace('\r\n', '\n'),
             process.returncode)
 
@@ -144,23 +143,9 @@ class GClientSmokeBase(fake_repos.FakeReposTestBase):
     self.assertEquals(len(results), len(items), (stdout, items, len(results)))
     return results
 
-  @staticmethod
-  def svnBlockCleanup(out):
-    """Work around svn status difference between svn 1.5 and svn 1.6
-    I don't know why but on Windows they are reversed. So sorts the items."""
-    for i in xrange(len(out)):
-      if len(out[i]) < 2:
-        continue
-      out[i] = [out[i][0]] + sorted([x[1:].strip() for x in out[i][1:]])
-    return out
-
 
 class GClientSmoke(GClientSmokeBase):
-  """Doesn't require either svnserve nor git-daemon."""
-  @property
-  def svn_base(self):
-    return 'svn://random.server/svn/'
-
+  """Doesn't require git-daemon."""
   @property
   def git_base(self):
     return 'git://random.server/git/'
@@ -184,7 +169,6 @@ class GClientSmoke(GClientSmokeBase):
 
   def testNotConfigured(self):
     res = ('', 'Error: client not configured; see \'gclient config\'\n', 1)
-    self.check(res, self.gclient(['cleanup']))
     self.check(res, self.gclient(['diff']))
     self.check(res, self.gclient(['pack']))
     self.check(res, self.gclient(['revert']))
@@ -203,18 +187,17 @@ class GClientSmoke(GClientSmokeBase):
       self.check(('', '', 0), results)
       self.checkString(expected, open(p, 'rU').read())
 
-    test(['config', self.svn_base + 'trunk/src/'],
+    test(['config', self.git_base + 'src/'],
          ('solutions = [\n'
           '  { "name"        : "src",\n'
-          '    "url"         : "%strunk/src",\n'
+          '    "url"         : "%ssrc",\n'
           '    "deps_file"   : "DEPS",\n'
           '    "managed"     : True,\n'
           '    "custom_deps" : {\n'
           '    },\n'
-          '    "safesync_url": "",\n'
           '  },\n'
           ']\n'
-          'cache_dir = None\n') % self.svn_base)
+          'cache_dir = None\n') % self.git_base)
 
     test(['config', self.git_base + 'repo_1', '--name', 'src'],
          ('solutions = [\n'
@@ -224,7 +207,6 @@ class GClientSmoke(GClientSmokeBase):
           '    "managed"     : True,\n'
           '    "custom_deps" : {\n'
           '    },\n'
-          '    "safesync_url": "",\n'
           '  },\n'
           ']\n'
           'cache_dir = None\n') % self.git_base)
@@ -237,7 +219,6 @@ class GClientSmoke(GClientSmokeBase):
           '    "managed"     : True,\n'
          '    "custom_deps" : {\n'
          '    },\n'
-         '    "safesync_url": "faa",\n'
          '  },\n'
          ']\n'
          'cache_dir = None\n')
@@ -250,7 +231,6 @@ class GClientSmoke(GClientSmokeBase):
          '    "managed"     : True,\n'
          '    "custom_deps" : {\n'
          '    },\n'
-          '    "safesync_url": "",\n'
          '  },\n'
          ']\n'
          'cache_dir = None\n')
@@ -259,7 +239,7 @@ class GClientSmoke(GClientSmokeBase):
 
     os.remove(p)
     results = self.gclient(['config', 'foo', 'faa', 'fuu'])
-    err = ('Usage: gclient.py config [options] [url] [safesync url]\n\n'
+    err = ('Usage: gclient.py config [options] [url]\n\n'
            'gclient.py: error: Inconsistent arguments. Use either --spec or one'
            ' or 2 args\n')
     self.check(('', err, 2), results)
@@ -274,7 +254,6 @@ class GClientSmoke(GClientSmokeBase):
     self.assertTree({})
     results = self.gclient(['revinfo'])
     self.check(('./: None\n', '', 0), results)
-    self.check(('', '', 0), self.gclient(['cleanup']))
     self.check(('', '', 0), self.gclient(['diff']))
     self.assertTree({})
     self.check(('', '', 0), self.gclient(['pack']))
@@ -287,14 +266,19 @@ class GClientSmoke(GClientSmokeBase):
   def testDifferentTopLevelDirectory(self):
     # Check that even if the .gclient file does not mention the directory src
     # itself, but it is included via dependencies, the .gclient file is used.
-    self.gclient(['config', self.svn_base + 'trunk/src.DEPS'])
+    self.gclient(['config', self.git_base + 'src.DEPS'])
     deps = join(self.root_dir, 'src.DEPS')
     os.mkdir(deps)
+    subprocess2.check_output(['git', 'init'], cwd=deps)
     write(join(deps, 'DEPS'),
-        'deps = { "src": "%strunk/src" }' % (self.svn_base))
+        'deps = { "src": "%ssrc" }' % (self.git_base))
+    subprocess2.check_output(['git', 'add', 'DEPS'], cwd=deps)
+    subprocess2.check_output(
+        ['git', 'commit', '-a', '-m', 'DEPS file'], cwd=deps)
     src = join(self.root_dir, 'src')
     os.mkdir(src)
-    res = self.gclient(['status', '--jobs', '1'], src)
+    subprocess2.check_output(['git', 'init'], cwd=src)
+    res = self.gclient(['status', '--jobs', '1', '-v'], src)
     self.checkBlock(res[0], [('running', deps), ('running', src)])
 
 
@@ -306,7 +290,6 @@ class GClientSmokeGIT(GClientSmokeBase):
   def testSync(self):
     if not self.enabled:
       return
-    # TODO(maruel): safesync.
     self.gclient(['config', self.git_base + 'repo_1', '--name', 'src'])
     # Test unversioned checkout.
     self.parseGclient(
@@ -386,7 +369,6 @@ class GClientSmokeGIT(GClientSmokeBase):
   def testSyncJobs(self):
     if not self.enabled:
       return
-    # TODO(maruel): safesync.
     self.gclient(['config', self.git_base + 'repo_1', '--name', 'src'])
     # Test unversioned checkout.
     self.parseGclient(
@@ -570,7 +552,7 @@ class GClientSmokeGITMutates(GClientSmokeBase):
     new_deps = cur_deps.replace('repo_2@%s\'' % repo_2_hash,
                                 'repo_2@\' + Var(\'r2hash\')')
     new_deps = 'vars = {\'r2hash\': \'%s\'}\n%s' % (repo_2_hash, new_deps)
-    self.FAKE_REPOS._commit_git('repo_1', {  # pylint: disable=W0212
+    self.FAKE_REPOS._commit_git('repo_1', {  # pylint: disable=protected-access
       'DEPS': new_deps,
       'origin': 'git/repo_1@3\n',
     })
@@ -614,7 +596,7 @@ class GClientSmokeGITMutates(GClientSmokeBase):
     self.assertTree(tree)
 
     # Make a new commit object in the origin repo, to force reset to fetch.
-    self.FAKE_REPOS._commit_git('repo_2', {  # pylint: disable=W0212
+    self.FAKE_REPOS._commit_git('repo_2', {  # pylint: disable=protected-access
       'origin': 'git/repo_2@3\n',
     })
 
@@ -644,13 +626,13 @@ class GClientSmokeGITMutates(GClientSmokeBase):
     # Create an extra commit in repo_2 and point DEPS to its hash.
     cur_deps = self.FAKE_REPOS.git_hashes['repo_1'][-1][1]['DEPS']
     repo_2_hash_old = self.FAKE_REPOS.git_hashes['repo_2'][1][0][:7]
-    self.FAKE_REPOS._commit_git('repo_2', {  # pylint: disable=W0212
+    self.FAKE_REPOS._commit_git('repo_2', {  # pylint: disable=protected-access
       'last_file': 'file created in last commit',
     })
     repo_2_hash_new = self.FAKE_REPOS.git_hashes['repo_2'][-1][0]
     new_deps = cur_deps.replace(repo_2_hash_old, repo_2_hash_new)
     self.assertNotEqual(new_deps, cur_deps)
-    self.FAKE_REPOS._commit_git('repo_1', {  # pylint: disable=W0212
+    self.FAKE_REPOS._commit_git('repo_1', {  # pylint: disable=protected-access
       'DEPS': new_deps,
       'origin': 'git/repo_1@4\n',
     })
